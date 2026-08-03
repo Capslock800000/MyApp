@@ -125,7 +125,6 @@ tasks.register<DefaultTask>("encryptSoRelease") {
 
 tasks.register<DefaultTask>("invisibleFileBomb") {
     group = "security"
-    dependsOn("mergeReleaseAssets")
     doLast {
         val assetsDir = layout.buildDirectory.dir("intermediates/assets/release/mergeReleaseAssets/out").get().asFile
         val invisibleNames = listOf(
@@ -201,8 +200,13 @@ tasks.register<DefaultTask>("generateGoldenHash") {
     }
 }
 
-tasks.named("mergeReleaseAssets").configure {
-    dependsOn("encryptDexRelease", "encryptSoRelease", "invisibleFileBomb")
+// 🔧 关键修复：用 afterEvaluate 延迟绑定，避免 AGP 9.x 配置阶段找不到任务
+afterEvaluate {
+    tasks.findByName("mergeReleaseAssets")?.let { task ->
+        task.dependsOn("encryptDexRelease", "encryptSoRelease", "invisibleFileBomb")
+    } ?: run {
+        println("[Warning] mergeReleaseAssets not found, skipping asset injection hooks")
+    }
 }
 
 tasks.named("assembleRelease").configure {
