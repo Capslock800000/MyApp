@@ -131,17 +131,34 @@ tasks.register<DefaultTask>("encryptSoRelease") {
     }
 }
 
+// 🔧 关键修复：classpath 延迟到 doFirst，避免配置阶段解析
 tasks.register<JavaExec>("obfuscateFlowRelease") {
     group = "security"
     dependsOn("compileReleaseKotlin")
     val inputDir = layout.buildDirectory.dir("tmp/kotlin-classes/release").get().asFile
     val outputDir = layout.buildDirectory.dir("intermediates/obf/release").get().asFile
-    outputDir.mkdirs()
-    classpath = project.files(
-        configurations.getByName("compileClasspath").files.filter { it.name.contains("asm") }
-    )
+    
     mainClass.set("com.example.myapp.build.Obfuscator")
     args = listOf(inputDir.absolutePath, outputDir.absolutePath, encryptKey)
+    
+    doFirst {
+        outputDir.mkdirs()
+        // AGP 9.x 配置名可能不同，逐个尝试
+        val compileConf = configurations.findByName("compileClasspath")
+            ?: configurations.findByName("releaseCompileClasspath")
+            ?: configurations.findByName("androidJdkImage")
+        
+        classpath = if (compileConf != null) {
+            project.files(compileConf.files.filter { it.name.contains("asm") })
+        } else {
+            // fallback：遍历所有配置找 asm jar
+            project.files(
+                configurations.flatMap { it.files }
+                    .filter { it.name.contains("asm") }
+                    .distinct()
+            )
+        }
+    }
 }
 
 tasks.register<DefaultTask>("generateGoldenHash") {
@@ -186,7 +203,7 @@ tasks.register<DefaultTask>("generateGoldenHash") {
     }
 }
 
-// ==================== 修复：whenTaskAdded 延迟挂钩 ====================
+// ==================== 关键修复：whenTaskAdded 延迟挂钩 ====================
 tasks.whenTaskAdded {
     when (name) {
         "mergeReleaseAssets" -> {
