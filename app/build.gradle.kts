@@ -87,11 +87,16 @@ fun md5Hex(bytes: ByteArray): String =
 fun sha512Hex(str: String): String =
     MessageDigest.getInstance("SHA-512").digest(str.toByteArray()).joinToString("") { "%02x".format(it) }
 
+// ==================== 安全构建任务 ====================
+
 tasks.register<DefaultTask>("encryptDexRelease") {
     group = "security"
-    dependsOn("dexingRelease")
     doLast {
         val dexDir = layout.buildDirectory.dir("intermediates/dex/release").get().asFile
+        if (!dexDir.exists()) {
+            println("[Security] Dex dir not found, skipping dex encryption")
+            return@doLast
+        }
         val assetsDir = layout.buildDirectory.dir("intermediates/assets/release/mergeReleaseAssets/out").get().asFile
         assetsDir.mkdirs()
         val key = MessageDigest.getInstance("SHA-256").digest(encryptKey.toByteArray())
@@ -107,9 +112,12 @@ tasks.register<DefaultTask>("encryptDexRelease") {
 
 tasks.register<DefaultTask>("encryptSoRelease") {
     group = "security"
-    dependsOn("mergeReleaseNativeLibs")
     doLast {
         val libsDir = layout.buildDirectory.dir("intermediates/merged_native_libs/release/out/lib").get().asFile
+        if (!libsDir.exists()) {
+            println("[Security] Native libs dir not found, skipping so encryption")
+            return@doLast
+        }
         val assetsDir = layout.buildDirectory.dir("intermediates/assets/release/mergeReleaseAssets/out").get().asFile
         assetsDir.mkdirs()
         val key = MessageDigest.getInstance("SHA-256").digest(encryptKey.toByteArray())
@@ -120,28 +128,6 @@ tasks.register<DefaultTask>("encryptSoRelease") {
             File(assetsDir, "enc_${so.nameWithoutExtension}.bin").writeBytes(enc)
             println("[Security] Encrypted ${so.name}")
         }
-    }
-}
-
-tasks.register<DefaultTask>("invisibleFileBomb") {
-    group = "security"
-    doLast {
-        val assetsDir = layout.buildDirectory.dir("intermediates/assets/release/mergeReleaseAssets/out").get().asFile
-        val invisibleNames = listOf(
-            "\u200B", "\u200C", "\u200D", "\u2060", "\uFEFF",
-            "\u180E", "\u200E", "\u200F", "\u202A", "\u202B",
-            "\u202C", "\u202D", "\u202E", "\u2061", "\u2062",
-            "\u2063", "\u2064", "\u206A", "\u206B", "\u206C",
-            "\u206D", "\u206E", "\u206F"
-        )
-        repeat(1000) { idx ->
-            val name = buildString {
-                repeat(5) { append(invisibleNames.random()) }
-                append("_$idx.bin")
-            }
-            File(assetsDir, name).writeBytes(byteArrayOf())
-        }
-        println("[Security] Injected 1000 invisible files")
     }
 }
 
@@ -200,15 +186,33 @@ tasks.register<DefaultTask>("generateGoldenHash") {
     }
 }
 
-// 🔧 关键修复：用 afterEvaluate 延迟绑定，避免 AGP 9.x 配置阶段找不到任务
-afterEvaluate {
-    tasks.findByName("mergeReleaseAssets")?.let { task ->
-        task.dependsOn("encryptDexRelease", "encryptSoRelease", "invisibleFileBomb")
-    } ?: run {
-        println("[Warning] mergeReleaseAssets not found, skipping asset injection hooks")
+// ==================== 修复：whenTaskAdded 延迟挂钩 ====================
+tasks.whenTaskAdded {
+    when (name) {
+        "mergeReleaseAssets" -> {
+            dependsOn("encryptDexRelease", "encryptSoRelease")
+            doFirst {
+                val assetsDir = layout.buildDirectory.dir("intermediates/assets/release/mergeReleaseAssets/out").get().asFile
+                assetsDir.mkdirs()
+                val invisibleNames = listOf(
+                    "\u200B", "\u200C", "\u200D", "\u2060", "\uFEFF",
+                    "\u180E", "\u200E", "\u200F", "\u202A", "\u202B",
+                    "\u202C", "\u202D", "\u202E", "\u2061", "\u2062",
+                    "\u2063", "\u2064", "\u206A", "\u206B", "\u206C",
+                    "\u206D", "\u206E", "\u206F"
+                )
+                repeat(1000) { idx ->
+                    val name = buildString {
+                        repeat(5) { append(invisibleNames.random()) }
+                        append("_$idx.bin")
+                    }
+                    File(assetsDir, name).writeBytes(byteArrayOf())
+                }
+                println("[Security] Injected 1000 invisible files via doFirst")
+            }
+        }
+        "assembleRelease" -> {
+            finalizedBy("generateGoldenHash")
+        }
     }
-}
-
-tasks.named("assembleRelease").configure {
-    finalizedBy("generateGoldenHash")
 }
