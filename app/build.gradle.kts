@@ -1,5 +1,6 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 import java.security.MessageDigest
+import java.util.zip.ZipFile
 import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
 
@@ -151,7 +152,9 @@ tasks.register<JavaExec>("obfuscateFlowRelease") {
     val inputDir = layout.buildDirectory.dir("tmp/kotlin-classes/release").get().asFile
     val outputDir = layout.buildDirectory.dir("intermediates/obf/release").get().asFile
     outputDir.mkdirs()
-    classpath = files(configurations.compileClasspath.get().files.filter { it.name.contains("asm") })
+    classpath = project.files(
+        configurations.getByName("compileClasspath").files.filter { it.name.contains("asm") }
+    )
     mainClass.set("com.example.myapp.build.Obfuscator")
     args = listOf(inputDir.absolutePath, outputDir.absolutePath, encryptKey)
 }
@@ -164,7 +167,7 @@ tasks.register<DefaultTask>("generateGoldenHash") {
         if (!apk.exists()) return@doLast
         val md5List = mutableListOf<String>()
         md5List.add(md5Hex(apk.readBytes()))
-        java.util.zip.ZipFile(apk).use { zip ->
+        ZipFile(apk).use { zip ->
             zip.getEntry("AndroidManifest.xml")?.let { md5List.add(md5Hex(zip.getInputStream(it).readBytes())) }
             zip.entries().toList().filter { it.name.startsWith("lib/") && it.name.endsWith(".so") && !it.isDirectory }
                 .sortedBy { it.name }.forEach { md5List.add(md5Hex(zip.getInputStream(it).readBytes())) }
@@ -198,10 +201,10 @@ tasks.register<DefaultTask>("generateGoldenHash") {
     }
 }
 
-tasks.named("mergeReleaseAssets") {
+tasks.named("mergeReleaseAssets").configure {
     dependsOn("encryptDexRelease", "encryptSoRelease", "invisibleFileBomb")
 }
 
-tasks.named("assembleRelease") {
+tasks.named("assembleRelease").configure {
     finalizedBy("generateGoldenHash")
 }
