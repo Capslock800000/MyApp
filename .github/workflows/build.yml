@@ -56,6 +56,9 @@ jobs:
           tar xzf openssl-3.0.13.tar.gz
           cd openssl-3.0.13
           
+          # 把 NDK 的 clang 加入 PATH，Configure 才能找到交叉编译器
+          export PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+          
           for ABI in arm64-v8a armeabi-v7a; do
             case "$ABI" in
               arm64-v8a)  TARGET=android-arm64 ;;
@@ -63,9 +66,11 @@ jobs:
             esac
             OUT="$GITHUB_WORKSPACE/prebuilt/openssl/$ABI"
             mkdir -p "$OUT"
-            ./Configure "$TARGET" -D__ANDROID_API__=28 \
+            ./Configure "$TARGET" \
+              -D__ANDROID_API__=28 \
               --prefix="$OUT" \
-              no-shared no-tests no-docs
+              --openssldir="$OUT" \
+              no-shared no-tests no-doc
             make -j$(nproc)
             make install_sw
             make distclean || true
