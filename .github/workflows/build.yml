@@ -113,35 +113,39 @@ jobs:
           cd "$GITHUB_WORKSPACE"
 
           # ============================================================
-          # 兼容方案2: 本地硬拷贝（避免符号链接在特定文件系统/容器下失效）
+          # 兼容方案2: 本地硬拷贝（仅复制真实二进制，绝不复制 NDK wrapper 脚本）
+          # NDK r29 的 clang 是 shell wrapper，内部用 dirname "$0" 查找 clang。
+          # cp -L 复制到 compat-bin 后，$0 指向 compat-bin，而那里没有 clang 二进制，
+          # 导致 wrapper 执行崩溃。因此只复制 llvm-ar / llvm-ranlib 等真实二进制。
           # ============================================================
-          echo ">>> 方案2: 本地硬拷贝"
-          cp -L "$NDK_BIN/$AARCH64_CLANG" "$COMPAT_BIN/aarch64-linux-android-clang"
-          cp -L "$NDK_BIN/$AARCH64_CLANGXX" "$COMPAT_BIN/aarch64-linux-android-clang++"
-          cp -L "$NDK_BIN/$AARCH64_CLANG" "$COMPAT_BIN/aarch64-linux-android-gcc"
-          cp -L "$NDK_BIN/$AARCH64_CLANGXX" "$COMPAT_BIN/aarch64-linux-android-g++"
+          echo ">>> 方案2: 本地硬拷贝（仅 llvm-ar / llvm-ranlib）"
           cp -L "$NDK_BIN/llvm-ar" "$COMPAT_BIN/aarch64-linux-android-ar"
           cp -L "$NDK_BIN/llvm-ranlib" "$COMPAT_BIN/aarch64-linux-android-ranlib"
-
-          cp -L "$NDK_BIN/$ARM_CLANG" "$COMPAT_BIN/arm-linux-androideabi-clang"
-          cp -L "$NDK_BIN/$ARM_CLANGXX" "$COMPAT_BIN/arm-linux-androideabi-clang++"
-          cp -L "$NDK_BIN/$ARM_CLANG" "$COMPAT_BIN/arm-linux-androideabi-gcc"
-          cp -L "$NDK_BIN/$ARM_CLANGXX" "$COMPAT_BIN/arm-linux-androideabi-g++"
           cp -L "$NDK_BIN/llvm-ar" "$COMPAT_BIN/arm-linux-androideabi-ar"
           cp -L "$NDK_BIN/llvm-ranlib" "$COMPAT_BIN/arm-linux-androideabi-ranlib"
-          chmod -R +x "$COMPAT_BIN"
 
           # ============================================================
-          # 兼容方案3: Fake Wrapper（修复原始变量未展开 bug）
-          # 原始脚本使用 <<'WRAPPER' 导致 ${NDK_BIN} 原样写入文件
-          # 修复: 使用 printf 确保变量在写入前已展开
+          # 兼容方案3: Fake Wrapper（文件名穷举 + 变量正确展开）
+          # 用循环批量生成所有 Configure 可能探测的编译器名，避免手动硬编码每个文件。
+          # exec 指向 NDK 原始绝对路径，彻底避开 dirname "$0" 问题。
           # ============================================================
-          echo ">>> 方案3: Fake Wrapper（变量已正确展开）"
-          printf '#!/bin/bash\nexec %s "$@"\n' "$NDK_BIN/$AARCH64_CLANG" > "$COMPAT_BIN/wrapper-aarch64-gcc"
-          printf '#!/bin/bash\nexec %s "$@"\n' "$NDK_BIN/$AARCH64_CLANGXX" > "$COMPAT_BIN/wrapper-aarch64-g++"
-          printf '#!/bin/bash\nexec %s "$@"\n' "$NDK_BIN/$ARM_CLANG" > "$COMPAT_BIN/wrapper-arm-gcc"
-          printf '#!/bin/bash\nexec %s "$@"\n' "$NDK_BIN/$ARM_CLANGXX" > "$COMPAT_BIN/wrapper-arm-g++"
-          chmod +x "$COMPAT_BIN"/wrapper-*
+          echo ">>> 方案3: 批量生成编译器 wrapper（文件名穷举）"
+          for name in aarch64-linux-android-gcc aarch64-linux-android-g++ aarch64-linux-android-clang aarch64-linux-android-clang++; do
+            target="$NDK_BIN/$AARCH64_CLANG"
+            case "$name" in
+              *g++*|*clang++*) target="$NDK_BIN/$AARCH64_CLANGXX" ;;
+            esac
+            printf '#!/bin/bash\nexec %s "$@"\n' "$target" > "$COMPAT_BIN/$name"
+          done
+
+          for name in arm-linux-androideabi-gcc arm-linux-androideabi-g++ arm-linux-androideabi-clang arm-linux-androideabi-clang++; do
+            target="$NDK_BIN/$ARM_CLANG"
+            case "$name" in
+              *g++*|*clang++*) target="$NDK_BIN/$ARM_CLANGXX" ;;
+            esac
+            printf '#!/bin/bash\nexec %s "$@"\n' "$target" > "$COMPAT_BIN/$name"
+          done
+          chmod +x "$COMPAT_BIN"/*
 
           # ============================================================
           # 兼容方案4: 环境变量覆盖
@@ -163,11 +167,12 @@ jobs:
           export CROSS_COMPILE_ARM="arm-linux-androideabi-"
 
           # ============================================================
-          # 兼容方案6: PATH 优先级（compat-bin 置于最前）
-          # 确保 OpenSSL Configure 的 which() 优先找到我们的工具
+          # 兼容方案6: PATH 优先级（NDK bin 在前，compat-bin 在后）
+          # 修复：NDK bin 内的符号链接能正确解析（wrapper 的 dirname 仍指向 NDK bin），
+          # compat-bin 作为后备。即使 compat-bin 被优先使用，其 wrapper 也是正确的。
           # ============================================================
           echo ">>> 方案6: PATH 优先级"
-          export PATH="$COMPAT_BIN:$NDK_BIN:$PATH"
+          export PATH="$NDK_BIN:$COMPAT_BIN:$PATH"
 
           echo ">>> Verifying tools in PATH:"
           which aarch64-linux-android-gcc || echo "  gcc not found in PATH"
@@ -236,7 +241,7 @@ jobs:
           # 如果 android 目标因 Configure 探测逻辑始终失败，回退到通用 Linux 目标
           # 注意：此方案仅在上述方案全部失效时手动启用
           # ============================================================
-          # 以下注释展示了 fallback 用法（当前未启用）：
+          # fallback 用法（当前未启用）：
           # ./Configure linux-aarch64 -D__ANDROID_API__=28 ... CC="$CC_AARCH64" ...
           # ./Configure linux-armv4  -D__ANDROID_API__=28 ... CC="$CC_ARM" ...
 
