@@ -42,7 +42,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: prebuilt
-          key: ${{ runner.os }}-prebuilt-ndk29-openssl3-libzip1.10-v8
+          key: ${{ runner.os }}-prebuilt-ndk29-openssl3-libzip1.10-v9
 
       - name: Build OpenSSL & libzip for Android
         if: steps.cache-prebuilt.outputs.cache-hit != 'true'
@@ -86,73 +86,71 @@ jobs:
           echo "  armv7:  $ARM_CLANG / $ARM_CLANGXX"
 
           # ============================================================
-          # 暴力根治：生成 fake gcc wrapper 脚本（比符号链接更可靠）
-          # Configure 脚本执行 `which aarch64-linux-android-gcc` 时，
-          # 这些 wrapper 会透明转发给 NDK clang。
+          # 暴力根治：在 NDK bin 目录内创建无 API 后缀的符号链接
+          # OpenSSL Configure 会优先扫描 ANDROID_NDK_HOME 下的 bin，
+          # NDK r29 只有带 API 级别的 clang，Configure 找不到就报错。
+          # ============================================================
+          echo ">>> Creating symlinks inside NDK bin for OpenSSL compatibility"
+          cd "$NDK_BIN"
+
+          # aarch64
+          ln -sfn "$AARCH64_CLANG"  aarch64-linux-android-clang
+          ln -sfn "$AARCH64_CLANGXX" aarch64-linux-android-clang++
+          ln -sfn "$AARCH64_CLANG"  aarch64-linux-android-gcc
+          ln -sfn "$AARCH64_CLANGXX" aarch64-linux-android-g++
+          ln -sfn llvm-ar            aarch64-linux-android-ar
+          ln -sfn llvm-nm            aarch64-linux-android-nm
+          ln -sfn llvm-ranlib        aarch64-linux-android-ranlib
+          ln -sfn llvm-strip         aarch64-linux-android-strip
+
+          # arm
+          ln -sfn "$ARM_CLANG"  arm-linux-androideabi-clang
+          ln -sfn "$ARM_CLANGXX" arm-linux-androideabi-clang++
+          ln -sfn "$ARM_CLANG"  arm-linux-androideabi-gcc
+          ln -sfn "$ARM_CLANGXX" arm-linux-androideabi-g++
+          ln -sfn llvm-ar       arm-linux-androideabi-ar
+          ln -sfn llvm-nm       arm-linux-androideabi-nm
+          ln -sfn llvm-ranlib   arm-linux-androideabi-ranlib
+          ln -sfn llvm-strip    arm-linux-androideabi-strip
+
+          cd "$GITHUB_WORKSPACE"
+          echo ">>> NDK bin after symlinks:"
+          ls -la "$NDK_BIN" | grep -E 'android-(gcc|g\+\+|clang|clang\+\+)'
+
+          # ============================================================
+          # 双重保险：fake wrapper + PATH
           # ============================================================
           FAKE_BIN="$GITHUB_WORKSPACE/fake-gcc-wrappers"
           mkdir -p "$FAKE_BIN"
 
-          # aarch64 wrappers
-          cat > "$FAKE_BIN/aarch64-linux-android-gcc" <<EOF
+          cat > "$FAKE_BIN/aarch64-linux-android-gcc" <<'WRAPPER'
           #!/bin/bash
-          exec "$NDK_BIN/$AARCH64_CLANG" "\$@"
-          EOF
-          cat > "$FAKE_BIN/aarch64-linux-android-g++" <<EOF
+          exec "${NDK_BIN}/${AARCH64_CLANG}" "$@"
+          WRAPPER
+          cat > "$FAKE_BIN/aarch64-linux-android-g++" <<'WRAPPER'
           #!/bin/bash
-          exec "$NDK_BIN/$AARCH64_CLANGXX" "\$@"
-          EOF
-          cat > "$FAKE_BIN/aarch64-linux-android-ar" <<EOF
+          exec "${NDK_BIN}/${AARCH64_CLANGXX}" "$@"
+          WRAPPER
+          cat > "$FAKE_BIN/arm-linux-androideabi-gcc" <<'WRAPPER'
           #!/bin/bash
-          exec "$NDK_BIN/llvm-ar" "\$@"
-          EOF
-          cat > "$FAKE_BIN/aarch64-linux-android-nm" <<EOF
+          exec "${NDK_BIN}/${ARM_CLANG}" "$@"
+          WRAPPER
+          cat > "$FAKE_BIN/arm-linux-androideabi-g++" <<'WRAPPER'
           #!/bin/bash
-          exec "$NDK_BIN/llvm-nm" "\$@"
-          EOF
-          cat > "$FAKE_BIN/aarch64-linux-android-ranlib" <<EOF
-          #!/bin/bash
-          exec "$NDK_BIN/llvm-ranlib" "\$@"
-          EOF
-          cat > "$FAKE_BIN/aarch64-linux-android-strip" <<EOF
-          #!/bin/bash
-          exec "$NDK_BIN/llvm-strip" "\$@"
-          EOF
-
-          # arm wrappers
-          cat > "$FAKE_BIN/arm-linux-androideabi-gcc" <<EOF
-          #!/bin/bash
-          exec "$NDK_BIN/$ARM_CLANG" "\$@"
-          EOF
-          cat > "$FAKE_BIN/arm-linux-androideabi-g++" <<EOF
-          #!/bin/bash
-          exec "$NDK_BIN/$ARM_CLANGXX" "\$@"
-          EOF
-          cat > "$FAKE_BIN/arm-linux-androideabi-ar" <<EOF
-          #!/bin/bash
-          exec "$NDK_BIN/llvm-ar" "\$@"
-          EOF
-          cat > "$FAKE_BIN/arm-linux-androideabi-nm" <<EOF
-          #!/bin/bash
-          exec "$NDK_BIN/llvm-nm" "\$@"
-          EOF
-          cat > "$FAKE_BIN/arm-linux-androideabi-ranlib" <<EOF
-          #!/bin/bash
-          exec "$NDK_BIN/llvm-ranlib" "\$@"
-          EOF
-          cat > "$FAKE_BIN/arm-linux-androideabi-strip" <<EOF
-          #!/bin/bash
-          exec "$NDK_BIN/llvm-strip" "\$@"
-          EOF
+          exec "${NDK_BIN}/${ARM_CLANGXX}" "$@"
+          WRAPPER
 
           chmod +x "$FAKE_BIN"/*
-          echo ">>> Fake gcc wrappers created:"
-          ls -la "$FAKE_BIN"
+          export PATH="$FAKE_BIN:$NDK_BIN:$PATH"
 
           # ============================================================
-          # 关键：将 fake wrapper 目录和 NDK bin 同时加入 PATH 最前端
+          # 三重保险：CC / CXX 环境变量
           # ============================================================
-          export PATH="$FAKE_BIN:$NDK_BIN:$PATH"
+          export CROSS_COMPILE=""
+          export CC="$NDK_BIN/aarch64-linux-android-clang"
+          export CXX="$NDK_BIN/aarch64-linux-android-clang++"
+          export AR="$NDK_BIN/llvm-ar"
+          export RANLIB="$NDK_BIN/llvm-ranlib"
 
           cd "$GITHUB_WORKSPACE"
 
@@ -178,6 +176,8 @@ jobs:
 
           # armeabi-v7a
           echo ">>> Configuring OpenSSL for armeabi-v7a"
+          export CC="$NDK_BIN/arm-linux-androideabi-clang"
+          export CXX="$NDK_BIN/arm-linux-androideabi-clang++"
           ./Configure android-arm \
             -D__ANDROID_API__=28 \
             --prefix="$GITHUB_WORKSPACE/prebuilt/openssl/armeabi-v7a" \
