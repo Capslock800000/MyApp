@@ -42,7 +42,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: prebuilt
-          key: ${{ runner.os }}-prebuilt-ndk29-openssl3-libzip1.10-v5
+          key: ${{ runner.os }}-prebuilt-ndk29-openssl3-libzip1.10-v6
 
       - name: Build OpenSSL for Android
         if: steps.cache-prebuilt.outputs.cache-hit != 'true'
@@ -60,59 +60,44 @@ jobs:
           fi
 
           # ============================================================
-          # 根治：OpenSSL Configure 脚本优先在 NDK_BIN 目录中查找编译器
-          # 而不是在 PATH 中查找。所以必须直接在 NDK 的 bin 目录里
-          # 创建符号链接，Configure 才能找到。
+          # 终极根治：OpenSSL Configure 脚本在 PATH 中查找 *-gcc
+          # NDK r29 只有 *-clang，没有 *-gcc
+          # 创建 fake gcc wrapper 脚本，放在 PATH 最前面
+          # Configure 找到"gcc" → wrapper 调用 clang
           # ============================================================
-          echo ">>> NDK bin directory contents (aarch64/arm):"
-          ls -1 "$NDK_BIN" | grep -E '^(aarch64|arm)' | head -20
+          mkdir -p "$GITHUB_WORKSPACE/fake-gcc"
 
-          # 自动探测 arm64 clang
-          AARCH64_GCC=$(ls -1 "$NDK_BIN" | grep -E '^aarch64-linux-android[0-9]+-clang$' | head -1)
-          AARCH64_GXX=$(ls -1 "$NDK_BIN" | grep -E '^aarch64-linux-android[0-9]+-clang\+\+$' | head -1)
-          # 自动探测 armv7 clang
-          ARM_GCC=$(ls -1 "$NDK_BIN" | grep -E '^armv7a-linux-androideabi[0-9]+-clang$' | head -1)
-          ARM_GXX=$(ls -1 "$NDK_BIN" | grep -E '^armv7a-linux-androideabi[0-9]+-clang\+\+$' | head -1)
+          create_wrapper() {
+            local name="$1"
+            local target="$2"
+            cat > "$GITHUB_WORKSPACE/fake-gcc/$name" << EOF
+#!/bin/bash
+exec $NDK_BIN/$target "\$@"
+EOF
+            chmod +x "$GITHUB_WORKSPACE/fake-gcc/$name"
+          }
 
-          if [ -z "$AARCH64_GCC" ] || [ -z "$AARCH64_GXX" ]; then
-            echo "Failed to find aarch64 clang in NDK"
-            ls -la "$NDK_BIN"
-            exit 1
-          fi
-          if [ -z "$ARM_GCC" ] || [ -z "$ARM_GXX" ]; then
-            echo "Failed to find armv7 clang in NDK"
-            ls -la "$NDK_BIN"
-            exit 1
-          fi
+          # arm64 wrappers
+          create_wrapper aarch64-linux-android-gcc aarch64-linux-android28-clang
+          create_wrapper aarch64-linux-android-g++ aarch64-linux-android28-clang++
+          create_wrapper aarch64-linux-android-ar llvm-ar
+          create_wrapper aarch64-linux-android-nm llvm-nm
+          create_wrapper aarch64-linux-android-ranlib llvm-ranlib
+          create_wrapper aarch64-linux-android-strip llvm-strip
 
-          echo ">>> Found compilers:"
-          echo "  arm64: $AARCH64_GCC / $AARCH64_GXX"
-          echo "  armv7: $ARM_GCC / $ARM_GXX"
+          # armv7 wrappers
+          create_wrapper arm-linux-androideabi-gcc armv7a-linux-androideabi28-clang
+          create_wrapper arm-linux-androideabi-g++ armv7a-linux-androideabi28-clang++
+          create_wrapper arm-linux-androideabi-ar llvm-ar
+          create_wrapper arm-linux-androideabi-nm llvm-nm
+          create_wrapper arm-linux-androideabi-ranlib llvm-ranlib
+          create_wrapper arm-linux-androideabi-strip llvm-strip
 
-          # ============================================================
-          # 关键：直接在 NDK 的 bin 目录中创建符号链接
-          # OpenSSL Configure 脚本通过 ANDROID_NDK_HOME 定位 NDK，
-          # 然后在 $NDK/toolchains/llvm/prebuilt/linux-x86_64/bin 中
-          # 硬编码查找 *-gcc，而不是查 PATH。
-          # ============================================================
-          cd "$NDK_BIN"
+          # 把 fake-gcc 放在 PATH 最前面，Configure 会优先找到
+          export PATH="$GITHUB_WORKSPACE/fake-gcc:$NDK_BIN:$PATH"
 
-          ln -sf "$AARCH64_GCC" aarch64-linux-android-gcc
-          ln -sf "$AARCH64_GXX" aarch64-linux-android-g++
-          ln -sf llvm-ar aarch64-linux-android-ar
-          ln -sf llvm-nm aarch64-linux-android-nm
-          ln -sf llvm-ranlib aarch64-linux-android-ranlib
-          ln -sf llvm-strip aarch64-linux-android-strip
-
-          ln -sf "$ARM_GCC" arm-linux-androideabi-gcc
-          ln -sf "$ARM_GXX" arm-linux-androideabi-g++
-          ln -sf llvm-ar arm-linux-androideabi-ar
-          ln -sf llvm-nm arm-linux-androideabi-nm
-          ln -sf llvm-ranlib arm-linux-androideabi-ranlib
-          ln -sf llvm-strip arm-linux-androideabi-strip
-
-          cd "$GITHUB_WORKSPACE"
-          export PATH="$NDK_BIN:$PATH"
+          echo ">>> Fake gcc wrappers created:"
+          ls -la "$GITHUB_WORKSPACE/fake-gcc/"
 
           wget -q https://www.openssl.org/source/openssl-3.0.13.tar.gz
           tar xzf openssl-3.0.13.tar.gz
