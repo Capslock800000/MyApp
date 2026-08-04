@@ -35,14 +35,14 @@ jobs:
             cmake;3.22.1
 
       - name: Install system deps
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev libzip-dev
+        run: sudo apt update && sudo apt install -y libssl-dev libzip-dev && sudo apt upgrade
 
       - name: Cache prebuilt native libs
         id: cache-prebuilt
         uses: actions/cache@v4
         with:
           path: prebuilt
-          key: ${{ runner.os }}-prebuilt-ndk29-openssl3-libzip1.10-v7
+          key: ${{ runner.os }}-prebuilt-ndk29-openssl3-libzip1.10-v8
 
       - name: Build OpenSSL for Android
         if: steps.cache-prebuilt.outputs.cache-hit != 'true'
@@ -84,38 +84,30 @@ jobs:
           echo "  armv7:  $ARM_CLANG / $ARM_CLANGXX"
 
           # ============================================================
-          # 根治：用 printf 创建 fake gcc wrapper，彻底避免 heredoc 缩进陷阱
-          # OpenSSL Configure 在 PATH 中查找 *-gcc，我们给它 fake 的
+          # 终极根治：OpenSSL Configure 脚本优先在 NDK 的 bin 目录中
+          # 查找 *-gcc，而不是在 PATH 中查找。
+          # 直接在 NDK bin 目录里创建符号链接，Configure 就能找到。
           # ============================================================
-          mkdir -p "$GITHUB_WORKSPACE/fake-gcc"
+          cd "$NDK_BIN"
 
-          create_wrapper() {
-            local wrapper_name="$1"
-            local real_target="$2"
-            printf '%s\n' '#!/bin/bash' "exec $NDK_BIN/$real_target \"\$@\"" > "$GITHUB_WORKSPACE/fake-gcc/$wrapper_name"
-            chmod +x "$GITHUB_WORKSPACE/fake-gcc/$wrapper_name"
-          }
+          ln -sf "$AARCH64_CLANG" aarch64-linux-android-gcc
+          ln -sf "$AARCH64_CLANGXX" aarch64-linux-android-g++
+          ln -sf llvm-ar aarch64-linux-android-ar
+          ln -sf llvm-nm aarch64-linux-android-nm
+          ln -sf llvm-ranlib aarch64-linux-android-ranlib
+          ln -sf llvm-strip aarch64-linux-android-strip
 
-          # arm64 wrappers
-          create_wrapper aarch64-linux-android-gcc  "$AARCH64_CLANG"
-          create_wrapper aarch64-linux-android-g++  "$AARCH64_CLANGXX"
-          create_wrapper aarch64-linux-android-ar   llvm-ar
-          create_wrapper aarch64-linux-android-nm   llvm-nm
-          create_wrapper aarch64-linux-android-ranlib llvm-ranlib
-          create_wrapper aarch64-linux-android-strip llvm-strip
+          ln -sf "$ARM_CLANG" arm-linux-androideabi-gcc
+          ln -sf "$ARM_CLANGXX" arm-linux-androideabi-g++
+          ln -sf llvm-ar arm-linux-androideabi-ar
+          ln -sf llvm-nm arm-linux-androideabi-nm
+          ln -sf llvm-ranlib arm-linux-androideabi-ranlib
+          ln -sf llvm-strip arm-linux-androideabi-strip
 
-          # armv7 wrappers
-          create_wrapper arm-linux-androideabi-gcc  "$ARM_CLANG"
-          create_wrapper arm-linux-androideabi-g++  "$ARM_CLANGXX"
-          create_wrapper arm-linux-androideabi-ar   llvm-ar
-          create_wrapper arm-linux-androideabi-nm   llvm-nm
-          create_wrapper arm-linux-androideabi-ranlib llvm-ranlib
-          create_wrapper arm-linux-androideabi-strip llvm-strip
+          echo ">>> Symlinks created in NDK bin:"
+          ls -la aarch64-linux-android-gcc arm-linux-androideabi-gcc
 
-          export PATH="$GITHUB_WORKSPACE/fake-gcc:$NDK_BIN:$PATH"
-
-          echo ">>> Fake gcc wrappers created:"
-          ls -la "$GITHUB_WORKSPACE/fake-gcc/"
+          cd "$GITHUB_WORKSPACE"
 
           wget -q https://www.openssl.org/source/openssl-3.0.13.tar.gz
           tar xzf openssl-3.0.13.tar.gz
