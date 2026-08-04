@@ -42,7 +42,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: prebuilt
-          key: ${{ runner.os }}-prebuilt-ndk29-openssl3-libzip1.10-v9
+          key: ${{ runner.os }}-prebuilt-ndk29-openssl4-libzip1.11-v1
 
       - name: Build OpenSSL & libzip for Android
         if: steps.cache-prebuilt.outputs.cache-hit != 'true'
@@ -83,18 +83,18 @@ jobs:
           echo "  arm64:  $AARCH64_CLANG / $AARCH64_CLANGXX"
           echo "  armv7:  $ARM_CLANG / $ARM_CLANGXX"
 
-          # 仅将 NDK bin 加入 PATH（供 make 阶段使用）
+          # 仅将 NDK bin 加入 PATH
           export PATH="$NDK_BIN:$PATH"
 
           # ============================================================
-          # 编译 OpenSSL 3.0.13
+          # 编译 OpenSSL 4.0.1
           # ============================================================
-          wget -q https://www.openssl.org/source/openssl-3.0.13.tar.gz
-          tar xzf openssl-3.0.13.tar.gz
-          cd openssl-3.0.13
+          wget -q https://www.openssl.org/source/openssl-4.0.1.tar.gz
+          tar xzf openssl-4.0.1.tar.gz
+          cd openssl-4.0.1
 
           # arm64-v8a
-          echo ">>> Configuring OpenSSL for arm64-v8a"
+          echo ">>> Configuring OpenSSL 4.0.1 for arm64-v8a"
           ./Configure android-arm64 \
             -D__ANDROID_API__=28 \
             --prefix="$GITHUB_WORKSPACE/prebuilt/openssl/arm64-v8a" \
@@ -103,7 +103,7 @@ jobs:
             CXX="$NDK_BIN/$AARCH64_CLANGXX" \
             AR="$NDK_BIN/llvm-ar" \
             RANLIB="$NDK_BIN/llvm-ranlib" \
-            no-shared no-tests
+            no-shared no-tests no-docs
 
           echo ">>> Building OpenSSL for arm64-v8a"
           make -j$(nproc)
@@ -112,7 +112,7 @@ jobs:
           make distclean || true
 
           # armeabi-v7a
-          echo ">>> Configuring OpenSSL for armeabi-v7a"
+          echo ">>> Configuring OpenSSL 4.0.1 for armeabi-v7a"
           ./Configure android-arm \
             -D__ANDROID_API__=28 \
             --prefix="$GITHUB_WORKSPACE/prebuilt/openssl/armeabi-v7a" \
@@ -121,7 +121,7 @@ jobs:
             CXX="$NDK_BIN/$ARM_CLANGXX" \
             AR="$NDK_BIN/llvm-ar" \
             RANLIB="$NDK_BIN/llvm-ranlib" \
-            no-shared no-tests
+            no-shared no-tests no-docs
 
           echo ">>> Building OpenSSL for armeabi-v7a"
           make -j$(nproc)
@@ -131,18 +131,18 @@ jobs:
           cd "$GITHUB_WORKSPACE"
 
           # ============================================================
-          # 编译 libzip 1.10.1
+          # 编译 libzip 1.11.4
           # ============================================================
-          wget -q https://libzip.org/download/libzip-1.10.1.tar.xz
-          tar xf libzip-1.10.1.tar.xz
-          cd libzip-1.10.1
+          wget -q https://libzip.org/download/libzip-1.11.4.tar.xz
+          tar xf libzip-1.11.4.tar.xz
+          cd libzip-1.11.4
 
           for ABI in arm64-v8a armeabi-v7a; do
             BUILD_DIR="build-$ABI"
             INSTALL_DIR="$GITHUB_WORKSPACE/prebuilt/libzip/$ABI"
             OPENSSL_DIR="$GITHUB_WORKSPACE/prebuilt/openssl/$ABI"
 
-            echo ">>> Configuring libzip for $ABI"
+            echo ">>> Configuring libzip 1.11.4 for $ABI"
             cmake -B "$BUILD_DIR" \
               -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
               -DANDROID_ABI="$ABI" \
