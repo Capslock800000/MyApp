@@ -51,14 +51,20 @@ jobs:
         run: |
           set -e
           mkdir -p prebuilt
-          
+
+          # 校验 NDK 路径
+          if [ ! -d "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin" ]; then
+            echo "NDK toolchain not found at expected path"
+            find "$ANDROID_NDK_HOME" -maxdepth 3 -type d | head -20
+            exit 1
+          fi
+
+          export PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+
           wget -q https://www.openssl.org/source/openssl-3.0.13.tar.gz
           tar xzf openssl-3.0.13.tar.gz
           cd openssl-3.0.13
-          
-          # 把 NDK 的 clang 加入 PATH，Configure 才能找到交叉编译器
-          export PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
-          
+
           for ABI in arm64-v8a armeabi-v7a; do
             case "$ABI" in
               arm64-v8a)  TARGET=android-arm64 ;;
@@ -66,13 +72,21 @@ jobs:
             esac
             OUT="$GITHUB_WORKSPACE/prebuilt/openssl/$ABI"
             mkdir -p "$OUT"
+
+            echo ">>> Configuring OpenSSL for $ABI ($TARGET)"
             ./Configure "$TARGET" \
               -D__ANDROID_API__=28 \
               --prefix="$OUT" \
               --openssldir="$OUT" \
-              no-shared no-tests no-doc
+              no-shared no-tests
+
+            echo ">>> Building OpenSSL for $ABI"
             make -j$(nproc)
+
+            echo ">>> Installing OpenSSL for $ABI"
             make install_sw
+
+            echo ">>> Cleaning up for next ABI"
             make distclean || true
           done
           cd ..
@@ -83,11 +97,11 @@ jobs:
           ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/29.0.14206865
         run: |
           set -e
-          
+
           wget -q https://libzip.org/download/libzip-1.10.1.tar.xz
           tar xf libzip-1.10.1.tar.xz
           cd libzip-1.10.1
-          
+
           for ABI in arm64-v8a armeabi-v7a; do
             mkdir -p "build-$ABI" && cd "build-$ABI"
             cmake .. \
