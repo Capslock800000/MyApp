@@ -62,9 +62,7 @@ jobs:
           echo ">>> NDK bin directory contents:"
           ls -1 "$NDK_BIN" | grep -E '^(aarch64|armv7a|llvm)' | head -30
 
-          # ============================================================
           # 自动探测实际文件名（不硬编码 API 级别）
-          # ============================================================
           AARCH64_CLANG=$(ls -1 "$NDK_BIN" | grep -E '^aarch64-linux-android[0-9]+-clang$' | sort | head -1)
           AARCH64_CLANGXX=$(ls -1 "$NDK_BIN" | grep -E '^aarch64-linux-android[0-9]+-clang\+\+$' | sort | head -1)
           ARM_CLANG=$(ls -1 "$NDK_BIN" | grep -E '^armv7a-linux-androideabi[0-9]+-clang$' | sort | head -1)
@@ -85,106 +83,8 @@ jobs:
           echo "  arm64:  $AARCH64_CLANG / $AARCH64_CLANGXX"
           echo "  armv7:  $ARM_CLANG / $ARM_CLANGXX"
 
-          # 创建统一兼容工具目录
-          COMPAT_BIN="$GITHUB_WORKSPACE/compat-bin"
-          mkdir -p "$COMPAT_BIN"
-
-          # ============================================================
-          # 兼容方案1: NDK bin 目录内符号链接
-          # OpenSSL Configure 优先在 PATH 中查找 aarch64-linux-android-gcc
-          # ============================================================
-          echo ">>> 方案1: NDK bin 内符号链接"
-          cd "$NDK_BIN"
-          ln -sfn "$AARCH64_CLANG"  aarch64-linux-android-clang
-          ln -sfn "$AARCH64_CLANGXX" aarch64-linux-android-clang++
-          ln -sfn "$AARCH64_CLANG"  aarch64-linux-android-gcc
-          ln -sfn "$AARCH64_CLANGXX" aarch64-linux-android-g++
-          ln -sfn llvm-ar            aarch64-linux-android-ar
-          ln -sfn llvm-ranlib        aarch64-linux-android-ranlib
-          ln -sfn llvm-strip         aarch64-linux-android-strip
-
-          ln -sfn "$ARM_CLANG"  arm-linux-androideabi-clang
-          ln -sfn "$ARM_CLANGXX" arm-linux-androideabi-clang++
-          ln -sfn "$ARM_CLANG"  arm-linux-androideabi-gcc
-          ln -sfn "$ARM_CLANGXX" arm-linux-androideabi-g++
-          ln -sfn llvm-ar       arm-linux-androideabi-ar
-          ln -sfn llvm-ranlib   arm-linux-androideabi-ranlib
-          ln -sfn llvm-strip    arm-linux-androideabi-strip
-          cd "$GITHUB_WORKSPACE"
-
-          # ============================================================
-          # 兼容方案2: 本地硬拷贝（仅复制真实二进制，绝不复制 NDK wrapper 脚本）
-          # NDK r29 的 clang 是 shell wrapper，内部用 dirname "$0" 查找 clang。
-          # cp -L 复制到 compat-bin 后，$0 指向 compat-bin，而那里没有 clang 二进制，
-          # 导致 wrapper 执行崩溃。因此只复制 llvm-ar / llvm-ranlib 等真实二进制。
-          # ============================================================
-          echo ">>> 方案2: 本地硬拷贝（仅 llvm-ar / llvm-ranlib）"
-          cp -L "$NDK_BIN/llvm-ar" "$COMPAT_BIN/aarch64-linux-android-ar"
-          cp -L "$NDK_BIN/llvm-ranlib" "$COMPAT_BIN/aarch64-linux-android-ranlib"
-          cp -L "$NDK_BIN/llvm-ar" "$COMPAT_BIN/arm-linux-androideabi-ar"
-          cp -L "$NDK_BIN/llvm-ranlib" "$COMPAT_BIN/arm-linux-androideabi-ranlib"
-
-          # ============================================================
-          # 兼容方案3: Fake Wrapper（文件名穷举 + 变量正确展开）
-          # 用循环批量生成所有 Configure 可能探测的编译器名，避免手动硬编码每个文件。
-          # exec 指向 NDK 原始绝对路径，彻底避开 dirname "$0" 问题。
-          # ============================================================
-          echo ">>> 方案3: 批量生成编译器 wrapper（文件名穷举）"
-          for name in aarch64-linux-android-gcc aarch64-linux-android-g++ aarch64-linux-android-clang aarch64-linux-android-clang++; do
-            target="$NDK_BIN/$AARCH64_CLANG"
-            case "$name" in
-              *g++*|*clang++*) target="$NDK_BIN/$AARCH64_CLANGXX" ;;
-            esac
-            printf '#!/bin/bash\nexec %s "$@"\n' "$target" > "$COMPAT_BIN/$name"
-          done
-
-          for name in arm-linux-androideabi-gcc arm-linux-androideabi-g++ arm-linux-androideabi-clang arm-linux-androideabi-clang++; do
-            target="$NDK_BIN/$ARM_CLANG"
-            case "$name" in
-              *g++*|*clang++*) target="$NDK_BIN/$ARM_CLANGXX" ;;
-            esac
-            printf '#!/bin/bash\nexec %s "$@"\n' "$target" > "$COMPAT_BIN/$name"
-          done
-          chmod +x "$COMPAT_BIN"/*
-
-          # ============================================================
-          # 兼容方案4: 环境变量覆盖
-          # 在 make 阶段强制使用指定编译器；Configure 阶段配合 PATH 使用
-          # ============================================================
-          echo ">>> 方案4: 环境变量"
-          export CC_AARCH64="$NDK_BIN/$AARCH64_CLANG"
-          export CXX_AARCH64="$NDK_BIN/$AARCH64_CLANGXX"
-          export CC_ARM="$NDK_BIN/$ARM_CLANG"
-          export CXX_ARM="$NDK_BIN/$ARM_CLANGXX"
-          export AR="$NDK_BIN/llvm-ar"
-          export RANLIB="$NDK_BIN/llvm-ranlib"
-
-          # ============================================================
-          # 兼容方案5: CROSS_COMPILE 前缀 + 统一 PATH
-          # ============================================================
-          echo ">>> 方案5: CROSS_COMPILE"
-          export CROSS_COMPILE_AARCH64="aarch64-linux-android-"
-          export CROSS_COMPILE_ARM="arm-linux-androideabi-"
-
-          # ============================================================
-          # 兼容方案6: PATH 优先级（NDK bin 在前，compat-bin 在后）
-          # 修复：NDK bin 内的符号链接能正确解析（wrapper 的 dirname 仍指向 NDK bin），
-          # compat-bin 作为后备。即使 compat-bin 被优先使用，其 wrapper 也是正确的。
-          # ============================================================
-          echo ">>> 方案6: PATH 优先级"
-          export PATH="$NDK_BIN:$COMPAT_BIN:$PATH"
-
-          echo ">>> Verifying tools in PATH:"
-          which aarch64-linux-android-gcc || echo "  gcc not found in PATH"
-          which aarch64-linux-android-clang || echo "  clang not found in PATH"
-          aarch64-linux-android-gcc --version 2>/dev/null || echo "  gcc version check failed"
-
-          # ============================================================
-          # 兼容方案7: Configure 命令行直接注入编译器路径
-          # 显式传入 CC/CXX/AR/RANLIB，覆盖 OpenSSL 默认探测
-          # ============================================================
-
-          cd "$GITHUB_WORKSPACE"
+          # 仅将 NDK bin 加入 PATH（供 make 阶段使用）
+          export PATH="$NDK_BIN:$PATH"
 
           # ============================================================
           # 编译 OpenSSL 3.0.13
@@ -195,19 +95,16 @@ jobs:
 
           # arm64-v8a
           echo ">>> Configuring OpenSSL for arm64-v8a"
-          export CC="$CC_AARCH64"
-          export CXX="$CXX_AARCH64"
-          export CROSS_COMPILE="$CROSS_COMPILE_AARCH64"
           ./Configure android-arm64 \
             -D__ANDROID_API__=28 \
             --prefix="$GITHUB_WORKSPACE/prebuilt/openssl/arm64-v8a" \
             --openssldir="$GITHUB_WORKSPACE/prebuilt/openssl/arm64-v8a" \
-            --cross-compile-prefix=aarch64-linux-android- \
-            CC="$CC_AARCH64" \
-            CXX="$CXX_AARCH64" \
-            AR="$AR" \
-            RANLIB="$RANLIB" \
+            CC="$NDK_BIN/$AARCH64_CLANG" \
+            CXX="$NDK_BIN/$AARCH64_CLANGXX" \
+            AR="$NDK_BIN/llvm-ar" \
+            RANLIB="$NDK_BIN/llvm-ranlib" \
             no-shared no-tests
+
           echo ">>> Building OpenSSL for arm64-v8a"
           make -j$(nproc)
           echo ">>> Installing OpenSSL for arm64-v8a"
@@ -216,34 +113,22 @@ jobs:
 
           # armeabi-v7a
           echo ">>> Configuring OpenSSL for armeabi-v7a"
-          export CC="$CC_ARM"
-          export CXX="$CXX_ARM"
-          export CROSS_COMPILE="$CROSS_COMPILE_ARM"
           ./Configure android-arm \
             -D__ANDROID_API__=28 \
             --prefix="$GITHUB_WORKSPACE/prebuilt/openssl/armeabi-v7a" \
             --openssldir="$GITHUB_WORKSPACE/prebuilt/openssl/armeabi-v7a" \
-            --cross-compile-prefix=arm-linux-androideabi- \
-            CC="$CC_ARM" \
-            CXX="$CXX_ARM" \
-            AR="$AR" \
-            RANLIB="$RANLIB" \
+            CC="$NDK_BIN/$ARM_CLANG" \
+            CXX="$NDK_BIN/$ARM_CLANGXX" \
+            AR="$NDK_BIN/llvm-ar" \
+            RANLIB="$NDK_BIN/llvm-ranlib" \
             no-shared no-tests
+
           echo ">>> Building OpenSSL for armeabi-v7a"
           make -j$(nproc)
           echo ">>> Installing OpenSSL for armeabi-v7a"
           make install_sw
 
           cd "$GITHUB_WORKSPACE"
-
-          # ============================================================
-          # 兼容方案8: 使用 linux-generic64 / linux-armv4 目标作为终极 Fallback
-          # 如果 android 目标因 Configure 探测逻辑始终失败，回退到通用 Linux 目标
-          # 注意：此方案仅在上述方案全部失效时手动启用
-          # ============================================================
-          # fallback 用法（当前未启用）：
-          # ./Configure linux-aarch64 -D__ANDROID_API__=28 ... CC="$CC_AARCH64" ...
-          # ./Configure linux-armv4  -D__ANDROID_API__=28 ... CC="$CC_ARM" ...
 
           # ============================================================
           # 编译 libzip 1.10.1
