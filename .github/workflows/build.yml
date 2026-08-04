@@ -35,7 +35,7 @@ jobs:
             cmake;3.22.1
 
       - name: Install system deps
-        run: sudo apt update && sudo apt install -y libssl-dev libzip-dev && sudo apt upgrade
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev libzip-dev
 
       - name: Cache prebuilt native libs
         id: cache-prebuilt
@@ -84,9 +84,7 @@ jobs:
           echo "  armv7:  $ARM_CLANG / $ARM_CLANGXX"
 
           # ============================================================
-          # 终极根治：OpenSSL Configure 脚本优先在 NDK 的 bin 目录中
-          # 查找 *-gcc，而不是在 PATH 中查找。
-          # 直接在 NDK bin 目录里创建符号链接，Configure 就能找到。
+          # 在 NDK bin 目录创建 fake gcc wrapper（符号链接）
           # ============================================================
           cd "$NDK_BIN"
 
@@ -106,6 +104,11 @@ jobs:
 
           echo ">>> Symlinks created in NDK bin:"
           ls -la aarch64-linux-android-gcc arm-linux-androideabi-gcc
+
+          # ============================================================
+          # 关键修复：将 NDK_BIN 加入 PATH，否则 Configure 找不到 gcc wrapper
+          # ============================================================
+          export PATH="$NDK_BIN:$PATH"
 
           cd "$GITHUB_WORKSPACE"
 
@@ -130,7 +133,7 @@ jobs:
           echo ">>> Installing OpenSSL for armeabi-v7a"
           make install_sw
 
-          cd ..
+          cd "$GITHUB_WORKSPACE"
 
       - name: Build libzip for Android
         if: steps.cache-prebuilt.outputs.cache-hit != 'true'
@@ -160,6 +163,8 @@ jobs:
             make install
             cd ..
           done
+
+          cd "$GITHUB_WORKSPACE"
 
       - name: Cache Gradle
         uses: actions/cache@v4
