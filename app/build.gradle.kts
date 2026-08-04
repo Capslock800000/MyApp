@@ -94,8 +94,6 @@ fun md5Hex(bytes: ByteArray): String =
 fun sha512Hex(str: String): String =
     MessageDigest.getInstance("SHA-512").digest(str.toByteArray()).joinToString("") { "%02x".format(it) }
 
-// ==================== 安全构建任务 ====================
-
 tasks.register<DefaultTask>("encryptDexRelease") {
     group = "security"
     doLast {
@@ -138,22 +136,21 @@ tasks.register<DefaultTask>("encryptSoRelease") {
     }
 }
 
-// 关键修复：classpath 延迟到 doFirst，避免配置阶段解析
 tasks.register<JavaExec>("obfuscateFlowRelease") {
     group = "security"
     dependsOn("compileReleaseKotlin")
     val inputDir = layout.buildDirectory.dir("tmp/kotlin-classes/release").get().asFile
     val outputDir = layout.buildDirectory.dir("intermediates/obf/release").get().asFile
-    
+
     mainClass.set("com.example.myapp.build.Obfuscator")
     args = listOf(inputDir.absolutePath, outputDir.absolutePath, encryptKey)
-    
+
     doFirst {
         outputDir.mkdirs()
         val compileConf = configurations.findByName("compileClasspath")
             ?: configurations.findByName("releaseCompileClasspath")
             ?: configurations.findByName("androidJdkImage")
-        
+
         classpath = if (compileConf != null) {
             project.files(compileConf.files.filter { it.name.contains("asm") })
         } else {
@@ -208,7 +205,6 @@ tasks.register<DefaultTask>("generateGoldenHash") {
     }
 }
 
-// ==================== 关键修复：whenTaskAdded 延迟挂钩 ====================
 tasks.whenTaskAdded {
     when (name) {
         "mergeReleaseAssets" -> {

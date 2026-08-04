@@ -42,7 +42,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: prebuilt
-          key: ${{ runner.os }}-prebuilt-ndk29-openssl3-libzip1.10
+          key: ${{ runner.os }}-prebuilt-ndk29-openssl3-libzip1.10-v2
 
       - name: Build OpenSSL for Android
         if: steps.cache-prebuilt.outputs.cache-hit != 'true'
@@ -53,42 +53,55 @@ jobs:
           mkdir -p prebuilt
 
           # 校验 NDK 路径
-          if [ ! -d "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin" ]; then
-            echo "NDK toolchain not found at expected path"
+          NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          if [ ! -d "$NDK_BIN" ]; then
+            echo "NDK toolchain not found at $NDK_BIN"
             find "$ANDROID_NDK_HOME" -maxdepth 3 -type d | head -20
             exit 1
           fi
-
-          export PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+          export PATH="$NDK_BIN:$PATH"
 
           wget -q https://www.openssl.org/source/openssl-3.0.13.tar.gz
           tar xzf openssl-3.0.13.tar.gz
           cd openssl-3.0.13
 
-          for ABI in arm64-v8a armeabi-v7a; do
-            case "$ABI" in
-              arm64-v8a)  TARGET=android-arm64 ;;
-              armeabi-v7a) TARGET=android-arm ;;
-            esac
-            OUT="$GITHUB_WORKSPACE/prebuilt/openssl/$ABI"
-            mkdir -p "$OUT"
+          # 编译 arm64-v8a
+          echo ">>> Configuring OpenSSL for arm64-v8a"
+          CC=aarch64-linux-android28-clang \
+          CXX=aarch64-linux-android28-clang++ \
+          AR=llvm-ar \
+          NM=llvm-nm \
+          RANLIB=llvm-ranlib \
+          STRIP=llvm-strip \
+          ./Configure android-arm64 \
+            -D__ANDROID_API__=28 \
+            --prefix="$GITHUB_WORKSPACE/prebuilt/openssl/arm64-v8a" \
+            --openssldir="$GITHUB_WORKSPACE/prebuilt/openssl/arm64-v8a" \
+            no-shared no-tests
+          echo ">>> Building OpenSSL for arm64-v8a"
+          make -j$(nproc)
+          echo ">>> Installing OpenSSL for arm64-v8a"
+          make install_sw
+          make distclean || true
 
-            echo ">>> Configuring OpenSSL for $ABI ($TARGET)"
-            ./Configure "$TARGET" \
-              -D__ANDROID_API__=28 \
-              --prefix="$OUT" \
-              --openssldir="$OUT" \
-              no-shared no-tests
+          # 编译 armeabi-v7a
+          echo ">>> Configuring OpenSSL for armeabi-v7a"
+          CC=armv7a-linux-androideabi28-clang \
+          CXX=armv7a-linux-androideabi28-clang++ \
+          AR=llvm-ar \
+          NM=llvm-nm \
+          RANLIB=llvm-ranlib \
+          STRIP=llvm-strip \
+          ./Configure android-arm \
+            -D__ANDROID_API__=28 \
+            --prefix="$GITHUB_WORKSPACE/prebuilt/openssl/armeabi-v7a" \
+            --openssldir="$GITHUB_WORKSPACE/prebuilt/openssl/armeabi-v7a" \
+            no-shared no-tests
+          echo ">>> Building OpenSSL for armeabi-v7a"
+          make -j$(nproc)
+          echo ">>> Installing OpenSSL for armeabi-v7a"
+          make install_sw
 
-            echo ">>> Building OpenSSL for $ABI"
-            make -j$(nproc)
-
-            echo ">>> Installing OpenSSL for $ABI"
-            make install_sw
-
-            echo ">>> Cleaning up for next ABI"
-            make distclean || true
-          done
           cd ..
 
       - name: Build libzip for Android
