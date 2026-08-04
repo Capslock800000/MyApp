@@ -12,6 +12,7 @@ plugins {
 android {
     namespace = "com.example.myapp"
     compileSdk = 36
+    ndkVersion = "29.0.14206865"
 
     defaultConfig {
         applicationId = "com.example.myapp"
@@ -24,10 +25,16 @@ android {
             abiFilters += listOf("arm64-v8a", "armeabi-v7a")
         }
 
+        val opensslBaseDir = System.getenv("OPENSSL_BASE_DIR")?.takeIf { it.isNotBlank() }
+            ?: "${rootDir}/prebuilt/openssl"
+        val libzipBaseDir = System.getenv("LIBZIP_BASE_DIR")?.takeIf { it.isNotBlank() }
+            ?: "${rootDir}/prebuilt/libzip"
+
         externalNativeBuild {
             cmake {
                 cppFlags += "-O2 -fvisibility=hidden -fvisibility-inlines-hidden -std=c++17"
-                arguments += "-DOPENSSL_ROOT_DIR=/usr"
+                arguments += "-DOPENSSL_BASE_DIR=$opensslBaseDir"
+                arguments += "-DLIBZIP_BASE_DIR=$libzipBaseDir"
             }
         }
     }
@@ -131,7 +138,7 @@ tasks.register<DefaultTask>("encryptSoRelease") {
     }
 }
 
-// 🔧 关键修复：classpath 延迟到 doFirst，避免配置阶段解析
+// 关键修复：classpath 延迟到 doFirst，避免配置阶段解析
 tasks.register<JavaExec>("obfuscateFlowRelease") {
     group = "security"
     dependsOn("compileReleaseKotlin")
@@ -143,7 +150,6 @@ tasks.register<JavaExec>("obfuscateFlowRelease") {
     
     doFirst {
         outputDir.mkdirs()
-        // AGP 9.x 配置名可能不同，逐个尝试
         val compileConf = configurations.findByName("compileClasspath")
             ?: configurations.findByName("releaseCompileClasspath")
             ?: configurations.findByName("androidJdkImage")
@@ -151,7 +157,6 @@ tasks.register<JavaExec>("obfuscateFlowRelease") {
         classpath = if (compileConf != null) {
             project.files(compileConf.files.filter { it.name.contains("asm") })
         } else {
-            // fallback：遍历所有配置找 asm jar
             project.files(
                 configurations.flatMap { it.files }
                     .filter { it.name.contains("asm") }

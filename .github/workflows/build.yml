@@ -37,6 +37,70 @@ jobs:
       - name: Install system deps
         run: sudo apt-get update && sudo apt-get install -y libssl-dev libzip-dev
 
+      - name: Cache prebuilt native libs
+        id: cache-prebuilt
+        uses: actions/cache@v4
+        with:
+          path: prebuilt
+          key: ${{ runner.os }}-prebuilt-ndk29-openssl3-libzip1.10
+
+      - name: Build OpenSSL for Android
+        if: steps.cache-prebuilt.outputs.cache-hit != 'true'
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/29.0.14206865
+        run: |
+          set -e
+          mkdir -p prebuilt
+          
+          wget -q https://www.openssl.org/source/openssl-3.0.13.tar.gz
+          tar xzf openssl-3.0.13.tar.gz
+          cd openssl-3.0.13
+          
+          for ABI in arm64-v8a armeabi-v7a; do
+            case "$ABI" in
+              arm64-v8a)  TARGET=android-arm64 ;;
+              armeabi-v7a) TARGET=android-arm ;;
+            esac
+            OUT="$GITHUB_WORKSPACE/prebuilt/openssl/$ABI"
+            mkdir -p "$OUT"
+            ./Configure "$TARGET" -D__ANDROID_API__=28 \
+              --prefix="$OUT" \
+              no-shared no-tests no-docs
+            make -j$(nproc)
+            make install_sw
+            make distclean || true
+          done
+          cd ..
+
+      - name: Build libzip for Android
+        if: steps.cache-prebuilt.outputs.cache-hit != 'true'
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/29.0.14206865
+        run: |
+          set -e
+          
+          wget -q https://libzip.org/download/libzip-1.10.1.tar.xz
+          tar xf libzip-1.10.1.tar.xz
+          cd libzip-1.10.1
+          
+          for ABI in arm64-v8a armeabi-v7a; do
+            mkdir -p "build-$ABI" && cd "build-$ABI"
+            cmake .. \
+              -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
+              -DANDROID_ABI="$ABI" \
+              -DANDROID_PLATFORM=android-28 \
+              -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/prebuilt/libzip/$ABI" \
+              -DOPENSSL_ROOT_DIR="$GITHUB_WORKSPACE/prebuilt/openssl/$ABI" \
+              -DBUILD_SHARED_LIBS=OFF \
+              -DENABLE_BZIP2=OFF \
+              -DENABLE_LZMA=OFF \
+              -DENABLE_ZSTD=OFF \
+              -DCMAKE_BUILD_TYPE=Release
+            make -j$(nproc)
+            make install
+            cd ..
+          done
+
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
@@ -54,8 +118,8 @@ jobs:
         run: ./gradlew assembleRelease
         env:
           ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
-          OPENSSL_ROOT_DIR: /usr
-          LIBZIP_ROOT_DIR: /usr
+          OPENSSL_BASE_DIR: ${{ github.workspace }}/prebuilt/openssl
+          LIBZIP_BASE_DIR: ${{ github.workspace }}/prebuilt/libzip
 
       - name: Sign APK
         uses: r0adkll/sign-android-release@v1
