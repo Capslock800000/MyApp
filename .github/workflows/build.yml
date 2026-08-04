@@ -42,7 +42,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: prebuilt
-          key: ${{ runner.os }}-prebuilt-ndk29-openssl3-libzip1.10-v6
+          key: ${{ runner.os }}-prebuilt-ndk29-openssl3-libzip1.10-v7
 
       - name: Build OpenSSL for Android
         if: steps.cache-prebuilt.outputs.cache-hit != 'true'
@@ -59,41 +59,59 @@ jobs:
             exit 1
           fi
 
+          echo ">>> NDK bin directory contents:"
+          ls -1 "$NDK_BIN" | grep -E '^(aarch64|armv7a|llvm)' | head -30
+
+          # 自动探测实际文件名（不硬编码 API 级别）
+          AARCH64_CLANG=$(ls -1 "$NDK_BIN" | grep -E '^aarch64-linux-android[0-9]+-clang$' | head -1)
+          AARCH64_CLANGXX=$(ls -1 "$NDK_BIN" | grep -E '^aarch64-linux-android[0-9]+-clang\+\+$' | head -1)
+          ARM_CLANG=$(ls -1 "$NDK_BIN" | grep -E '^armv7a-linux-androideabi[0-9]+-clang$' | head -1)
+          ARM_CLANGXX=$(ls -1 "$NDK_BIN" | grep -E '^armv7a-linux-androideabi[0-9]+-clang\+\+$' | head -1)
+
+          if [ -z "$AARCH64_CLANG" ] || [ -z "$AARCH64_CLANGXX" ]; then
+            echo "Failed to find aarch64 clang in NDK"
+            ls -la "$NDK_BIN"
+            exit 1
+          fi
+          if [ -z "$ARM_CLANG" ] || [ -z "$ARM_CLANGXX" ]; then
+            echo "Failed to find armv7 clang in NDK"
+            ls -la "$NDK_BIN"
+            exit 1
+          fi
+
+          echo ">>> Found compilers:"
+          echo "  arm64:  $AARCH64_CLANG / $AARCH64_CLANGXX"
+          echo "  armv7:  $ARM_CLANG / $ARM_CLANGXX"
+
           # ============================================================
-          # 终极根治：OpenSSL Configure 脚本在 PATH 中查找 *-gcc
-          # NDK r29 只有 *-clang，没有 *-gcc
-          # 创建 fake gcc wrapper 脚本，放在 PATH 最前面
-          # Configure 找到"gcc" → wrapper 调用 clang
+          # 根治：用 printf 创建 fake gcc wrapper，彻底避免 heredoc 缩进陷阱
+          # OpenSSL Configure 在 PATH 中查找 *-gcc，我们给它 fake 的
           # ============================================================
           mkdir -p "$GITHUB_WORKSPACE/fake-gcc"
 
           create_wrapper() {
-            local name="$1"
-            local target="$2"
-            cat > "$GITHUB_WORKSPACE/fake-gcc/$name" << EOF
-#!/bin/bash
-exec $NDK_BIN/$target "\$@"
-EOF
-            chmod +x "$GITHUB_WORKSPACE/fake-gcc/$name"
+            local wrapper_name="$1"
+            local real_target="$2"
+            printf '%s\n' '#!/bin/bash' "exec $NDK_BIN/$real_target \"\$@\"" > "$GITHUB_WORKSPACE/fake-gcc/$wrapper_name"
+            chmod +x "$GITHUB_WORKSPACE/fake-gcc/$wrapper_name"
           }
 
           # arm64 wrappers
-          create_wrapper aarch64-linux-android-gcc aarch64-linux-android28-clang
-          create_wrapper aarch64-linux-android-g++ aarch64-linux-android28-clang++
-          create_wrapper aarch64-linux-android-ar llvm-ar
-          create_wrapper aarch64-linux-android-nm llvm-nm
+          create_wrapper aarch64-linux-android-gcc  "$AARCH64_CLANG"
+          create_wrapper aarch64-linux-android-g++  "$AARCH64_CLANGXX"
+          create_wrapper aarch64-linux-android-ar   llvm-ar
+          create_wrapper aarch64-linux-android-nm   llvm-nm
           create_wrapper aarch64-linux-android-ranlib llvm-ranlib
           create_wrapper aarch64-linux-android-strip llvm-strip
 
           # armv7 wrappers
-          create_wrapper arm-linux-androideabi-gcc armv7a-linux-androideabi28-clang
-          create_wrapper arm-linux-androideabi-g++ armv7a-linux-androideabi28-clang++
-          create_wrapper arm-linux-androideabi-ar llvm-ar
-          create_wrapper arm-linux-androideabi-nm llvm-nm
+          create_wrapper arm-linux-androideabi-gcc  "$ARM_CLANG"
+          create_wrapper arm-linux-androideabi-g++  "$ARM_CLANGXX"
+          create_wrapper arm-linux-androideabi-ar   llvm-ar
+          create_wrapper arm-linux-androideabi-nm   llvm-nm
           create_wrapper arm-linux-androideabi-ranlib llvm-ranlib
           create_wrapper arm-linux-androideabi-strip llvm-strip
 
-          # 把 fake-gcc 放在 PATH 最前面，Configure 会优先找到
           export PATH="$GITHUB_WORKSPACE/fake-gcc:$NDK_BIN:$PATH"
 
           echo ">>> Fake gcc wrappers created:"
@@ -103,26 +121,18 @@ EOF
           tar xzf openssl-3.0.13.tar.gz
           cd openssl-3.0.13
 
-          # 编译 arm64-v8a
+          # arm64-v8a
           echo ">>> Configuring OpenSSL for arm64-v8a"
-          ./Configure android-arm64 \
-            -D__ANDROID_API__=28 \
-            --prefix="$GITHUB_WORKSPACE/prebuilt/openssl/arm64-v8a" \
-            --openssldir="$GITHUB_WORKSPACE/prebuilt/openssl/arm64-v8a" \
-            no-shared no-tests
+          ./Configure android-arm64 -D__ANDROID_API__=28 --prefix="$GITHUB_WORKSPACE/prebuilt/openssl/arm64-v8a" --openssldir="$GITHUB_WORKSPACE/prebuilt/openssl/arm64-v8a" no-shared no-tests
           echo ">>> Building OpenSSL for arm64-v8a"
           make -j$(nproc)
           echo ">>> Installing OpenSSL for arm64-v8a"
           make install_sw
           make distclean || true
 
-          # 编译 armeabi-v7a
+          # armeabi-v7a
           echo ">>> Configuring OpenSSL for armeabi-v7a"
-          ./Configure android-arm \
-            -D__ANDROID_API__=28 \
-            --prefix="$GITHUB_WORKSPACE/prebuilt/openssl/armeabi-v7a" \
-            --openssldir="$GITHUB_WORKSPACE/prebuilt/openssl/armeabi-v7a" \
-            no-shared no-tests
+          ./Configure android-arm -D__ANDROID_API__=28 --prefix="$GITHUB_WORKSPACE/prebuilt/openssl/armeabi-v7a" --openssldir="$GITHUB_WORKSPACE/prebuilt/openssl/armeabi-v7a" no-shared no-tests
           echo ">>> Building OpenSSL for armeabi-v7a"
           make -j$(nproc)
           echo ">>> Installing OpenSSL for armeabi-v7a"
