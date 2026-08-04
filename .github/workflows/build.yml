@@ -42,7 +42,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: prebuilt
-          key: ${{ runner.os }}-prebuilt-ndk29-openssl3-libzip1.10-v3
+          key: ${{ runner.os }}-prebuilt-ndk29-openssl3-libzip1.10-v4
 
       - name: Build OpenSSL for Android
         if: steps.cache-prebuilt.outputs.cache-hit != 'true'
@@ -60,27 +60,52 @@ jobs:
           fi
 
           # ============================================================
-          # 根治：OpenSSL Configure 硬编码找 *-gcc，NDK r29 只有 *-clang
-          # 创建符号链接，让 OpenSSL 的 Configure 脚本"以为"找到了 gcc
+          # 根治：自动探测 NDK 中实际的 clang 文件名（不硬编码 API 级别）
+          # NDK r29 的文件名是 aarch64-linux-android21-clang，不是 28
           # ============================================================
+          echo ">>> NDK bin directory contents (aarch64/arm):"
+          ls -1 "$NDK_BIN" | grep -E '^(aarch64|arm)' | head -20
+
+          # 自动探测 arm64 clang
+          AARCH64_GCC=$(ls -1 "$NDK_BIN" | grep -E '^aarch64-linux-android[0-9]+-clang$' | head -1)
+          AARCH64_GXX=$(ls -1 "$NDK_BIN" | grep -E '^aarch64-linux-android[0-9]+-clang\+\+$' | head -1)
+          # 自动探测 armv7 clang
+          ARM_GCC=$(ls -1 "$NDK_BIN" | grep -E '^armv7a-linux-androideabi[0-9]+-clang$' | head -1)
+          ARM_GXX=$(ls -1 "$NDK_BIN" | grep -E '^armv7a-linux-androideabi[0-9]+-clang\+\+$' | head -1)
+
+          # 校验是否找到
+          if [ -z "$AARCH64_GCC" ] || [ -z "$AARCH64_GXX" ]; then
+            echo "Failed to find aarch64 clang in NDK"
+            ls -la "$NDK_BIN"
+            exit 1
+          fi
+          if [ -z "$ARM_GCC" ] || [ -z "$ARM_GXX" ]; then
+            echo "Failed to find armv7 clang in NDK"
+            ls -la "$NDK_BIN"
+            exit 1
+          fi
+
+          echo ">>> Found compilers:"
+          echo "  arm64:  $AARCH64_GCC / $AARCH64_GXX"
+          echo "  armv7:  $ARM_GCC / $ARM_GXX"
+
+          # 创建符号链接，让 OpenSSL Configure 脚本"以为"找到了 gcc
           mkdir -p "$GITHUB_WORKSPACE/ndk-symlinks"
           cd "$GITHUB_WORKSPACE/ndk-symlinks"
 
-          # arm64-v8a: OpenSSL 找 aarch64-linux-android-gcc
-          ln -sf "$NDK_BIN/aarch64-linux-android28-clang"  aarch64-linux-android-gcc
-          ln -sf "$NDK_BIN/aarch64-linux-android28-clang++" aarch64-linux-android-g++
-          ln -sf "$NDK_BIN/llvm-ar"  aarch64-linux-android-ar
-          ln -sf "$NDK_BIN/llvm-nm"  aarch64-linux-android-nm
-          ln -sf "$NDK_BIN/llvm-ranlib"  aarch64-linux-android-ranlib
-          ln -sf "$NDK_BIN/llvm-strip"   aarch64-linux-android-strip
+          ln -sf "$NDK_BIN/$AARCH64_GCC" aarch64-linux-android-gcc
+          ln -sf "$NDK_BIN/$AARCH64_GXX" aarch64-linux-android-g++
+          ln -sf "$NDK_BIN/llvm-ar" aarch64-linux-android-ar
+          ln -sf "$NDK_BIN/llvm-nm" aarch64-linux-android-nm
+          ln -sf "$NDK_BIN/llvm-ranlib" aarch64-linux-android-ranlib
+          ln -sf "$NDK_BIN/llvm-strip" aarch64-linux-android-strip
 
-          # armeabi-v7a: OpenSSL 找 arm-linux-androideabi-gcc
-          ln -sf "$NDK_BIN/armv7a-linux-androideabi28-clang"  arm-linux-androideabi-gcc
-          ln -sf "$NDK_BIN/armv7a-linux-androideabi28-clang++" arm-linux-androideabi-g++
-          ln -sf "$NDK_BIN/llvm-ar"  arm-linux-androideabi-ar
-          ln -sf "$NDK_BIN/llvm-nm"  arm-linux-androideabi-nm
-          ln -sf "$NDK_BIN/llvm-ranlib"  arm-linux-androideabi-ranlib
-          ln -sf "$NDK_BIN/llvm-strip"   arm-linux-androideabi-strip
+          ln -sf "$NDK_BIN/$ARM_GCC" arm-linux-androideabi-gcc
+          ln -sf "$NDK_BIN/$ARM_GXX" arm-linux-androideabi-g++
+          ln -sf "$NDK_BIN/llvm-ar" arm-linux-androideabi-ar
+          ln -sf "$NDK_BIN/llvm-nm" arm-linux-androideabi-nm
+          ln -sf "$NDK_BIN/llvm-ranlib" arm-linux-androideabi-ranlib
+          ln -sf "$NDK_BIN/llvm-strip" arm-linux-androideabi-strip
 
           cd "$GITHUB_WORKSPACE"
           export PATH="$GITHUB_WORKSPACE/ndk-symlinks:$NDK_BIN:$PATH"
