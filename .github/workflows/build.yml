@@ -44,7 +44,7 @@ jobs:
           path: prebuilt
           key: ${{ runner.os }}-prebuilt-ndk29-openssl3-libzip1.10-v8
 
-      - name: Build OpenSSL for Android
+      - name: Build OpenSSL & libzip for Android
         if: steps.cache-prebuilt.outputs.cache-hit != 'true'
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/29.0.14206865
@@ -62,11 +62,13 @@ jobs:
           echo ">>> NDK bin directory contents:"
           ls -1 "$NDK_BIN" | grep -E '^(aarch64|armv7a|llvm)' | head -30
 
+          # ============================================================
           # 自动探测实际文件名（不硬编码 API 级别）
-          AARCH64_CLANG=$(ls -1 "$NDK_BIN" | grep -E '^aarch64-linux-android[0-9]+-clang$' | head -1)
-          AARCH64_CLANGXX=$(ls -1 "$NDK_BIN" | grep -E '^aarch64-linux-android[0-9]+-clang\+\+$' | head -1)
-          ARM_CLANG=$(ls -1 "$NDK_BIN" | grep -E '^armv7a-linux-androideabi[0-9]+-clang$' | head -1)
-          ARM_CLANGXX=$(ls -1 "$NDK_BIN" | grep -E '^armv7a-linux-androideabi[0-9]+-clang\+\+$' | head -1)
+          # ============================================================
+          AARCH64_CLANG=$(ls -1 "$NDK_BIN" | grep -E '^aarch64-linux-android[0-9]+-clang$' | sort | head -1)
+          AARCH64_CLANGXX=$(ls -1 "$NDK_BIN" | grep -E '^aarch64-linux-android[0-9]+-clang\+\+$' | sort | head -1)
+          ARM_CLANG=$(ls -1 "$NDK_BIN" | grep -E '^armv7a-linux-androideabi[0-9]+-clang$' | sort | head -1)
+          ARM_CLANGXX=$(ls -1 "$NDK_BIN" | grep -E '^armv7a-linux-androideabi[0-9]+-clang\+\+$' | sort | head -1)
 
           if [ -z "$AARCH64_CLANG" ] || [ -z "$AARCH64_CLANGXX" ]; then
             echo "Failed to find aarch64 clang in NDK"
@@ -84,41 +86,90 @@ jobs:
           echo "  armv7:  $ARM_CLANG / $ARM_CLANGXX"
 
           # ============================================================
-          # 在 NDK bin 目录创建 fake gcc wrapper（符号链接）
+          # 暴力根治：生成 fake gcc wrapper 脚本（比符号链接更可靠）
+          # Configure 脚本执行 `which aarch64-linux-android-gcc` 时，
+          # 这些 wrapper 会透明转发给 NDK clang。
           # ============================================================
-          cd "$NDK_BIN"
+          FAKE_BIN="$GITHUB_WORKSPACE/fake-gcc-wrappers"
+          mkdir -p "$FAKE_BIN"
 
-          ln -sf "$AARCH64_CLANG" aarch64-linux-android-gcc
-          ln -sf "$AARCH64_CLANGXX" aarch64-linux-android-g++
-          ln -sf llvm-ar aarch64-linux-android-ar
-          ln -sf llvm-nm aarch64-linux-android-nm
-          ln -sf llvm-ranlib aarch64-linux-android-ranlib
-          ln -sf llvm-strip aarch64-linux-android-strip
+          # aarch64 wrappers
+          cat > "$FAKE_BIN/aarch64-linux-android-gcc" <<EOF
+          #!/bin/bash
+          exec "$NDK_BIN/$AARCH64_CLANG" "\$@"
+          EOF
+          cat > "$FAKE_BIN/aarch64-linux-android-g++" <<EOF
+          #!/bin/bash
+          exec "$NDK_BIN/$AARCH64_CLANGXX" "\$@"
+          EOF
+          cat > "$FAKE_BIN/aarch64-linux-android-ar" <<EOF
+          #!/bin/bash
+          exec "$NDK_BIN/llvm-ar" "\$@"
+          EOF
+          cat > "$FAKE_BIN/aarch64-linux-android-nm" <<EOF
+          #!/bin/bash
+          exec "$NDK_BIN/llvm-nm" "\$@"
+          EOF
+          cat > "$FAKE_BIN/aarch64-linux-android-ranlib" <<EOF
+          #!/bin/bash
+          exec "$NDK_BIN/llvm-ranlib" "\$@"
+          EOF
+          cat > "$FAKE_BIN/aarch64-linux-android-strip" <<EOF
+          #!/bin/bash
+          exec "$NDK_BIN/llvm-strip" "\$@"
+          EOF
 
-          ln -sf "$ARM_CLANG" arm-linux-androideabi-gcc
-          ln -sf "$ARM_CLANGXX" arm-linux-androideabi-g++
-          ln -sf llvm-ar arm-linux-androideabi-ar
-          ln -sf llvm-nm arm-linux-androideabi-nm
-          ln -sf llvm-ranlib arm-linux-androideabi-ranlib
-          ln -sf llvm-strip arm-linux-androideabi-strip
+          # arm wrappers
+          cat > "$FAKE_BIN/arm-linux-androideabi-gcc" <<EOF
+          #!/bin/bash
+          exec "$NDK_BIN/$ARM_CLANG" "\$@"
+          EOF
+          cat > "$FAKE_BIN/arm-linux-androideabi-g++" <<EOF
+          #!/bin/bash
+          exec "$NDK_BIN/$ARM_CLANGXX" "\$@"
+          EOF
+          cat > "$FAKE_BIN/arm-linux-androideabi-ar" <<EOF
+          #!/bin/bash
+          exec "$NDK_BIN/llvm-ar" "\$@"
+          EOF
+          cat > "$FAKE_BIN/arm-linux-androideabi-nm" <<EOF
+          #!/bin/bash
+          exec "$NDK_BIN/llvm-nm" "\$@"
+          EOF
+          cat > "$FAKE_BIN/arm-linux-androideabi-ranlib" <<EOF
+          #!/bin/bash
+          exec "$NDK_BIN/llvm-ranlib" "\$@"
+          EOF
+          cat > "$FAKE_BIN/arm-linux-androideabi-strip" <<EOF
+          #!/bin/bash
+          exec "$NDK_BIN/llvm-strip" "\$@"
+          EOF
 
-          echo ">>> Symlinks created in NDK bin:"
-          ls -la aarch64-linux-android-gcc arm-linux-androideabi-gcc
+          chmod +x "$FAKE_BIN"/*
+          echo ">>> Fake gcc wrappers created:"
+          ls -la "$FAKE_BIN"
 
           # ============================================================
-          # 关键修复：将 NDK_BIN 加入 PATH，否则 Configure 找不到 gcc wrapper
+          # 关键：将 fake wrapper 目录和 NDK bin 同时加入 PATH 最前端
           # ============================================================
-          export PATH="$NDK_BIN:$PATH"
+          export PATH="$FAKE_BIN:$NDK_BIN:$PATH"
 
           cd "$GITHUB_WORKSPACE"
 
+          # ============================================================
+          # 编译 OpenSSL 3.0.13
+          # ============================================================
           wget -q https://www.openssl.org/source/openssl-3.0.13.tar.gz
           tar xzf openssl-3.0.13.tar.gz
           cd openssl-3.0.13
 
           # arm64-v8a
           echo ">>> Configuring OpenSSL for arm64-v8a"
-          ./Configure android-arm64 -D__ANDROID_API__=28 --prefix="$GITHUB_WORKSPACE/prebuilt/openssl/arm64-v8a" --openssldir="$GITHUB_WORKSPACE/prebuilt/openssl/arm64-v8a" no-shared no-tests
+          ./Configure android-arm64 \
+            -D__ANDROID_API__=28 \
+            --prefix="$GITHUB_WORKSPACE/prebuilt/openssl/arm64-v8a" \
+            --openssldir="$GITHUB_WORKSPACE/prebuilt/openssl/arm64-v8a" \
+            no-shared no-tests
           echo ">>> Building OpenSSL for arm64-v8a"
           make -j$(nproc)
           echo ">>> Installing OpenSSL for arm64-v8a"
@@ -127,7 +178,11 @@ jobs:
 
           # armeabi-v7a
           echo ">>> Configuring OpenSSL for armeabi-v7a"
-          ./Configure android-arm -D__ANDROID_API__=28 --prefix="$GITHUB_WORKSPACE/prebuilt/openssl/armeabi-v7a" --openssldir="$GITHUB_WORKSPACE/prebuilt/openssl/armeabi-v7a" no-shared no-tests
+          ./Configure android-arm \
+            -D__ANDROID_API__=28 \
+            --prefix="$GITHUB_WORKSPACE/prebuilt/openssl/armeabi-v7a" \
+            --openssldir="$GITHUB_WORKSPACE/prebuilt/openssl/armeabi-v7a" \
+            no-shared no-tests
           echo ">>> Building OpenSSL for armeabi-v7a"
           make -j$(nproc)
           echo ">>> Installing OpenSSL for armeabi-v7a"
@@ -135,36 +190,45 @@ jobs:
 
           cd "$GITHUB_WORKSPACE"
 
-      - name: Build libzip for Android
-        if: steps.cache-prebuilt.outputs.cache-hit != 'true'
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/29.0.14206865
-        run: |
-          set -e
-
+          # ============================================================
+          # 编译 libzip 1.10.1
+          # ============================================================
           wget -q https://libzip.org/download/libzip-1.10.1.tar.xz
           tar xf libzip-1.10.1.tar.xz
           cd libzip-1.10.1
 
           for ABI in arm64-v8a armeabi-v7a; do
-            mkdir -p "build-$ABI" && cd "build-$ABI"
-            cmake .. \
+            BUILD_DIR="build-$ABI"
+            INSTALL_DIR="$GITHUB_WORKSPACE/prebuilt/libzip/$ABI"
+            OPENSSL_DIR="$GITHUB_WORKSPACE/prebuilt/openssl/$ABI"
+
+            echo ">>> Configuring libzip for $ABI"
+            cmake -B "$BUILD_DIR" \
               -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
               -DANDROID_ABI="$ABI" \
               -DANDROID_PLATFORM=android-28 \
-              -DCMAKE_INSTALL_PREFIX="$GITHUB_WORKSPACE/prebuilt/libzip/$ABI" \
-              -DOPENSSL_ROOT_DIR="$GITHUB_WORKSPACE/prebuilt/openssl/$ABI" \
+              -DANDROID_STL=c++_static \
+              -DCMAKE_INSTALL_PREFIX="$INSTALL_DIR" \
+              -DCMAKE_BUILD_TYPE=Release \
               -DBUILD_SHARED_LIBS=OFF \
+              -DENABLE_OPENSSL=ON \
+              -DOPENSSL_ROOT_DIR="$OPENSSL_DIR" \
+              -DOPENSSL_INCLUDE_DIR="$OPENSSL_DIR/include" \
+              -DOPENSSL_CRYPTO_LIBRARY="$OPENSSL_DIR/lib/libcrypto.a" \
+              -DOPENSSL_SSL_LIBRARY="$OPENSSL_DIR/lib/libssl.a" \
               -DENABLE_BZIP2=OFF \
               -DENABLE_LZMA=OFF \
-              -DENABLE_ZSTD=OFF \
-              -DCMAKE_BUILD_TYPE=Release
-            make -j$(nproc)
-            make install
-            cd ..
+              -DENABLE_ZSTD=OFF
+
+            echo ">>> Building libzip for $ABI"
+            cmake --build "$BUILD_DIR" --config Release -j$(nproc)
+            echo ">>> Installing libzip for $ABI"
+            cmake --install "$BUILD_DIR"
           done
 
           cd "$GITHUB_WORKSPACE"
+          echo ">>> All prebuilt artifacts:"
+          find prebuilt -type f | sort
 
       - name: Cache Gradle
         uses: actions/cache@v4
