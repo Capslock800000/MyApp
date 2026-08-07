@@ -1,138 +1,129 @@
-name: Build & Fortify
-
-on:
-  push:
-    branches: [main, master]
-  pull_request:
-    branches: [main, master]
-  workflow_dispatch:
-
-jobs:
-  build:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
-
-      - name: Set up OpenJDK 21
-        uses: actions/setup-java@v4
-        with:
-          java-version: '21'
-          distribution: 'zulu'
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          cmdline-tools-version: '11076708'
-          packages: >
-            platforms;android-36
-            build-tools;36.0.0
-            ndk;29.0.14206865
-            cmake;3.22.1
-
-      - name: Install system deps
-        run: sudo apt-get update && sudo apt-get install -y libssl-dev libzip-dev
-
-      - name: Cache prebuilt native libs
-        id: cache-prebuilt
-        uses: actions/cache@v4
-        with:
-          path: prebuilt
-          key: ${{ runner.os }}-prebuilt-ndk29-openssl4-libzip1.11-v1
-
       - name: Build OpenSSL & libzip for Android
         if: steps.cache-prebuilt.outputs.cache-hit != 'true'
-        env:
-          ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/29.0.14206865
         run: |
-          set -e
+          set -euo pipefail
           mkdir -p prebuilt
 
+          ANDROID_NDK_HOME="$ANDROID_SDK_ROOT/ndk/29.0.14206865"
           NDK_BIN="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+
           if [ ! -d "$NDK_BIN" ]; then
-            echo "NDK toolchain not found at $NDK_BIN"
+            echo "❌ NDK toolchain not found at $NDK_BIN"
             find "$ANDROID_NDK_HOME" -maxdepth 3 -type d | head -20
             exit 1
           fi
 
-          echo ">>> NDK bin directory contents:"
+          echo ">>> NDK bin directory (filtered):"
           ls -1 "$NDK_BIN" | grep -E '^(aarch64|armv7a|llvm)' | head -30
 
-          # 自动探测实际文件名（不硬编码 API 级别）
-          AARCH64_CLANG=$(ls -1 "$NDK_BIN" | grep -E '^aarch64-linux-android[0-9]+-clang$' | sort | head -1)
-          AARCH64_CLANGXX=$(ls -1 "$NDK_BIN" | grep -E '^aarch64-linux-android[0-9]+-clang\+\+$' | sort | head -1)
-          ARM_CLANG=$(ls -1 "$NDK_BIN" | grep -E '^armv7a-linux-androideabi[0-9]+-clang$' | sort | head -1)
-          ARM_CLANGXX=$(ls -1 "$NDK_BIN" | grep -E '^armv7a-linux-androideabi[0-9]+-clang\+\+$' | sort | head -1)
+          # 修复2: sort -V | tail -1 确保选中最高 API 级别编译器
+          AARCH64_CLANG=$(ls -1 "$NDK_BIN" | grep -E '^aarch64-linux-android[0-9]+-clang$' | sort -V | tail -1)
+          AARCH64_CLANGXX=$(ls -1 "$NDK_BIN" | grep -E '^aarch64-linux-android[0-9]+-clang\+\+$' | sort -V | tail -1)
+          ARM_CLANG=$(ls -1 "$NDK_BIN" | grep -E '^armv7a-linux-androideabi[0-9]+-clang$' | sort -V | tail -1)
+          ARM_CLANGXX=$(ls -1 "$NDK_BIN" | grep -E '^armv7a-linux-androideabi[0-9]+-clang\+\+$' | sort -V | tail -1)
 
           if [ -z "$AARCH64_CLANG" ] || [ -z "$AARCH64_CLANGXX" ]; then
-            echo "Failed to find aarch64 clang in NDK"
+            echo "❌ Failed to find aarch64 clang in NDK"
             ls -la "$NDK_BIN"
             exit 1
           fi
           if [ -z "$ARM_CLANG" ] || [ -z "$ARM_CLANGXX" ]; then
-            echo "Failed to find armv7 clang in NDK"
+            echo "❌ Failed to find armv7 clang in NDK"
             ls -la "$NDK_BIN"
             exit 1
           fi
 
-          echo ">>> Found compilers:"
+          echo ">>> Selected compilers:"
           echo "  arm64:  $AARCH64_CLANG / $AARCH64_CLANGXX"
           echo "  armv7:  $ARM_CLANG / $ARM_CLANGXX"
 
-          # 仅将 NDK bin 加入 PATH
-          export PATH="$NDK_BIN:$PATH"
+          # ==========================================================
+          # 修复1: 创建 Fake GCC Wrapper（OpenSSL Configure 内部仍查找 gcc）
+          # ==========================================================
+          FAKE_GCC_DIR="$GITHUB_WORKSPACE/.fake-gcc"
+          mkdir -p "$FAKE_GCC_DIR"
 
-          # ============================================================
+          # arm64 fake gcc
+          cat > "$FAKE_GCC_DIR/aarch64-linux-android-gcc" <<'EOF'
+          #!/bin/bash
+          # Fake GCC wrapper for OpenSSL Configure on NDK r29 (no real gcc)
+          exec "$(dirname "$0")/../ndk-bin/${AARCH64_CLANG}" "$@"
+          EOF
+          # 用绝对路径重写，避免相对路径问题
+          sed -i "s|\\$(dirname \"\\$0\")/../ndk-bin/\\${AARCH64_CLANG}|$NDK_BIN/$AARCH64_CLANG|" "$FAKE_GCC_DIR/aarch64-linux-android-gcc"
+          chmod +x "$FAKE_GCC_DIR/aarch64-linux-android-gcc"
+
+          # arm fake gcc
+          cat > "$FAKE_GCC_DIR/arm-linux-androideabi-gcc" <<'EOF'
+          #!/bin/bash
+          # Fake GCC wrapper for OpenSSL Configure on NDK r29 (no real gcc)
+          exec "$(dirname "$0")/../ndk-bin/${ARM_CLANG}" "$@"
+          EOF
+          sed -i "s|\\$(dirname \"\\$0\")/../ndk-bin/\\${ARM_CLANG}|$NDK_BIN/$ARM_CLANG|" "$FAKE_GCC_DIR/arm-linux-androideabi-gcc"
+          chmod +x "$FAKE_GCC_DIR/arm-linux-androideabi-gcc"
+
+          echo ">>> Fake GCC wrappers created:"
+          ls -la "$FAKE_GCC_DIR"
+
+          # 将 Fake GCC 目录置于 PATH 最前，NDK bin 紧随其后
+          export PATH="$FAKE_GCC_DIR:$NDK_BIN:$PATH"
+
+          # ==========================================================
           # 编译 OpenSSL 4.0.1
-          # ============================================================
+          # ==========================================================
           wget -q https://www.openssl.org/source/openssl-4.0.1.tar.gz
           tar xzf openssl-4.0.1.tar.gz
+
+          build_openssl() {
+            local ABI=$1
+            local TARGET=$2
+            local CC_BIN=$3
+            local CXX_BIN=$4
+            local PREFIX="$GITHUB_WORKSPACE/prebuilt/openssl/$ABI"
+
+            echo ""
+            echo ">>> [OpenSSL] Configuring for $ABI (target: $TARGET)"
+            ./Configure "$TARGET" \
+              -D__ANDROID_API__=28 \
+              --prefix="$PREFIX" \
+              --openssldir="$PREFIX" \
+              CC="$NDK_BIN/$CC_BIN" \
+              CXX="$NDK_BIN/$CXX_BIN" \
+              AR="$NDK_BIN/llvm-ar" \
+              RANLIB="$NDK_BIN/llvm-ranlib" \
+              no-shared no-tests no-docs
+
+            echo ">>> [OpenSSL] Building for $ABI"
+            make -j"$(nproc)"
+
+            echo ">>> [OpenSSL] Installing for $ABI"
+            make install_sw
+
+            if [ ! -f "$PREFIX/lib/libcrypto.a" ] || [ ! -f "$PREFIX/lib/libssl.a" ]; then
+              echo "❌ OpenSSL static libraries missing for $ABI"
+              find "$PREFIX" -type f | sort
+              exit 1
+            fi
+            echo "✅ [OpenSSL] $ABI verified: libcrypto.a + libssl.a"
+
+            make distclean || true
+          }
+
           cd openssl-4.0.1
+          build_openssl "arm64-v8a" "android-arm64" "$AARCH64_CLANG" "$AARCH64_CLANGXX"
 
-          # arm64-v8a
-          echo ">>> Configuring OpenSSL 4.0.1 for arm64-v8a"
-          ./Configure android-arm64 \
-            -D__ANDROID_API__=28 \
-            --prefix="$GITHUB_WORKSPACE/prebuilt/openssl/arm64-v8a" \
-            --openssldir="$GITHUB_WORKSPACE/prebuilt/openssl/arm64-v8a" \
-            CC="$NDK_BIN/$AARCH64_CLANG" \
-            CXX="$NDK_BIN/$AARCH64_CLANGXX" \
-            AR="$NDK_BIN/llvm-ar" \
-            RANLIB="$NDK_BIN/llvm-ranlib" \
-            no-shared no-tests no-docs
-
-          echo ">>> Building OpenSSL for arm64-v8a"
-          make -j$(nproc)
-          echo ">>> Installing OpenSSL for arm64-v8a"
-          make install_sw
-          make distclean || true
-
-          # armeabi-v7a
-          echo ">>> Configuring OpenSSL 4.0.1 for armeabi-v7a"
-          ./Configure android-arm \
-            -D__ANDROID_API__=28 \
-            --prefix="$GITHUB_WORKSPACE/prebuilt/openssl/armeabi-v7a" \
-            --openssldir="$GITHUB_WORKSPACE/prebuilt/openssl/armeabi-v7a" \
-            CC="$NDK_BIN/$ARM_CLANG" \
-            CXX="$NDK_BIN/$ARM_CLANGXX" \
-            AR="$NDK_BIN/llvm-ar" \
-            RANLIB="$NDK_BIN/llvm-ranlib" \
-            no-shared no-tests no-docs
-
-          echo ">>> Building OpenSSL for armeabi-v7a"
-          make -j$(nproc)
-          echo ">>> Installing OpenSSL for armeabi-v7a"
-          make install_sw
+          # distclean 后彻底重新解压，杜绝残留污染
+          cd "$GITHUB_WORKSPACE"
+          rm -rf openssl-4.0.1
+          tar xzf openssl-4.0.1.tar.gz
+          cd openssl-4.0.1
+          build_openssl "armeabi-v7a" "android-arm" "$ARM_CLANG" "$ARM_CLANGXX"
 
           cd "$GITHUB_WORKSPACE"
 
-          # ============================================================
+          # ==========================================================
           # 编译 libzip 1.11.4
-          # ============================================================
+          # ==========================================================
           wget -q https://libzip.org/download/libzip-1.11.4.tar.xz
           tar xf libzip-1.11.4.tar.xz
           cd libzip-1.11.4
@@ -142,7 +133,13 @@ jobs:
             INSTALL_DIR="$GITHUB_WORKSPACE/prebuilt/libzip/$ABI"
             OPENSSL_DIR="$GITHUB_WORKSPACE/prebuilt/openssl/$ABI"
 
-            echo ">>> Configuring libzip 1.11.4 for $ABI"
+            case "$ABI" in
+              arm64-v8a)  TRIPLE="aarch64-linux-android" ;;
+              armeabi-v7a) TRIPLE="arm-linux-androideabi" ;;
+            esac
+
+            echo ""
+            echo ">>> [libzip] Configuring for $ABI"
             cmake -B "$BUILD_DIR" \
               -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake" \
               -DANDROID_ABI="$ABI" \
@@ -158,58 +155,26 @@ jobs:
               -DOPENSSL_SSL_LIBRARY="$OPENSSL_DIR/lib/libssl.a" \
               -DENABLE_BZIP2=OFF \
               -DENABLE_LZMA=OFF \
-              -DENABLE_ZSTD=OFF
+              -DENABLE_ZSTD=OFF \
+              -DCMAKE_DISABLE_FIND_PACKAGE_PkgConfig=TRUE \
+              -DZLIB_INCLUDE_DIR="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/include" \
+              -DZLIB_LIBRARY="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/$TRIPLE/libz.a"
 
-            echo ">>> Building libzip for $ABI"
-            cmake --build "$BUILD_DIR" --config Release -j$(nproc)
-            echo ">>> Installing libzip for $ABI"
+            echo ">>> [libzip] Building for $ABI"
+            cmake --build "$BUILD_DIR" --config Release -j"$(nproc)"
+
+            echo ">>> [libzip] Installing for $ABI"
             cmake --install "$BUILD_DIR"
+
+            if [ ! -f "$INSTALL_DIR/lib/libzip.a" ]; then
+              echo "❌ libzip static library missing for $ABI"
+              find "$INSTALL_DIR" -type f | sort
+              exit 1
+            fi
+            echo "✅ [libzip] $ABI verified: libzip.a"
           done
 
           cd "$GITHUB_WORKSPACE"
+          echo ""
           echo ">>> All prebuilt artifacts:"
           find prebuilt -type f | sort
-
-      - name: Cache Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-            ~/.android/build-cache
-          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
-          restore-keys: ${{ runner.os }}-gradle-
-
-      - name: Grant execute permission for gradlew
-        run: chmod +x gradlew
-
-      - name: Build Release APK
-        run: ./gradlew assembleRelease
-        env:
-          ANDROID_HOME: ${{ env.ANDROID_SDK_ROOT }}
-          OPENSSL_BASE_DIR: ${{ github.workspace }}/prebuilt/openssl
-          LIBZIP_BASE_DIR: ${{ github.workspace }}/prebuilt/libzip
-
-      - name: Sign APK
-        uses: r0adkll/sign-android-release@v1
-        id: sign_app
-        with:
-          releaseDirectory: app/build/outputs/apk/release
-          signingKeyBase64: ${{ secrets.SIGNING_KEY_BASE64 }}
-          alias: ${{ secrets.ALIAS }}
-          keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
-          keyPassword: ${{ secrets.KEY_PASSWORD }}
-        env:
-          BUILD_TOOLS_VERSION: "36.0.0"
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: fortified-apk
-          path: app/build/outputs/apk/release/*-signed.apk
-
-      - name: Upload Golden Hash
-        uses: actions/upload-artifact@v4
-        with:
-          name: golden-hash
-          path: app/build/outputs/security/
